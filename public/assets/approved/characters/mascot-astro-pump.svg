@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" viewBox="0 0 800 800" role="img" aria-labelledby="title desc">
+  <title id="title">Astro Pump Mascot</title>
+  <desc id="desc">Approved mascot illustration used in social scenes.</desc>
+  <rect width="800" height="800" fill="#0B1020" />
+  <circle cx="400" cy="400" r="220" fill="#FB7185" />
+  <circle cx="340" cy="360" r="36" fill="#111827" />
+  <circle cx="460" cy="360" r="36" fill="#111827" />
+  <path d="M300 470 Q400 560 500 470" stroke="#111827" stroke-width="24" fill="none" stroke-linecap="round" />
+  <ellipse cx="400" cy="220" rx="140" ry="42" fill="#E2E8F0" opacity="0.9" />
+</svg>

@@ -1,0 +1,275 @@
+import {
+  BRIEF_SCHEMA_VERSION,
+  parseNormalizedBrief,
+  type NormalizedBrief,
+} from "./brief-schema";
+import type { FailureReasonCode } from "./contracts";
+import {
+  getPromptRegistryEntry,
+  NORMALIZE_BRIEF_PROMPT_ID,
+  REPAIR_BRIEF_PROMPT_ID,
+  type PromptRegistryEntry,
+} from "./prompt-registry";
+
+const DEFAULT_MODEL = "gpt-5.4-mini";
+const DEFAULT_MAX_INPUT_CHARS = 4_000;
+const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
+
+type ResponseInputMessage = {
+  role: "system" | "user";
+  content: string;
+};
+
+export type OpenAIResponsesRequest = {
+  model: string;
+  input: ResponseInputMessage[];
+};
+
+export type OpenAIResponsesResult = {
+  id?: string;
+  output_text?: string;
+  output?: Array<{
+    content?: Array<{
+      type?: string;
+      text?: string;
+    }>;
+  }>;
+};
+
+export interface OpenAIResponsesClient {
+  createResponse: (request: OpenAIResponsesRequest) => Promise<OpenAIResponsesResult>;
+}
+
+export type PromptMetadata = {
+  prompt_id: PromptRegistryEntry["prompt_id"];
+  version: PromptRegistryEntry["version"];
+  template_hash: PromptRegistryEntry["template_hash"];
+  model: string;
+};
+
+type SharedResult = {
+  sanitizedBrief: string;
+  promptMetadata: PromptMetadata[];
+  repairAttempted: boolean;
+};
+
+export type NormalizeBriefResult =
+  | (SharedResult & {
+      outcome: "ok";
+      normalizedBrief: NormalizedBrief;
+      providerRef: string | null;
+    })
+  | (SharedResult & {
+      outcome: "needs_clarification";
+      reasonCodes: FailureReasonCode[];
+      providerRef: string | null;
+    })
+  | (SharedResult & {
+      outcome: "provider_failed";
+      reason: string;
+      providerRef: string | null;
+    });
+
+export type OpenAINormalizerOptions = {
+  client: OpenAIResponsesClient;
+  model?: string;
+  maxInputChars?: number;
+};
+
+function sanitizeBrief(value: string, maxInputChars: number): string {
+  const withoutControls = value.replace(CONTROL_CHARACTERS, "");
+  const trimmed = withoutControls.trim();
+  if (trimmed.length <= maxInputChars) {
+    return trimmed;
+  }
+
+  return trimmed.slice(0, maxInputChars);
+}
+
+function renderPromptTemplate(template: string, variables: Record<string, string>): string {
+  return template.replace(/{{\s*([a-zA-Z0-9_]+)\s*}}/g, (_, key: string) => {
+    return variables[key] ?? "";
+  });
+}
+
+function extractOutputText(response: OpenAIResponsesResult): string | null {
+  if (typeof response.output_text === "string" && response.output_text.trim().length > 0) {
+    return response.output_text;
+  }
+
+  for (const outputPart of response.output ?? []) {
+    for (const content of outputPart.content ?? []) {
+      if (content.type === "output_text" && typeof content.text === "string" && content.text.trim().length > 0) {
+        return content.text;
+      }
+    }
+  }
+
+  return null;
+}
+
+function parseModelJson(candidate: string): unknown {
+  try {
+    return JSON.parse(candidate);
+  } catch {
+    return null;
+  }
+}
+
+function containsModelSelectedAssetIds(brief: NormalizedBrief): boolean {
+  return brief.scenes.some((scene) => scene.approvedAssetIds.length > 0);
+}
+
+function metadataFromPrompt(prompt: PromptRegistryEntry, model: string): PromptMetadata {
+  return {
+    prompt_id: prompt.prompt_id,
+    version: prompt.version,
+    template_hash: prompt.template_hash,
+    model,
+  };
+}
+
+function reasonCodesFromCandidate(candidate: string): FailureReasonCode[] {
+  const parsedCandidate = parseModelJson(candidate);
+  if (parsedCandidate === null) {
+    return ["brief_invalid_schema"];
+  }
+
+  const parsed = parseNormalizedBrief(parsedCandidate);
+  if (!parsed.ok) {
+    return parsed.reasonCodes;
+  }
+
+  if (containsModelSelectedAssetIds(parsed.value)) {
+    return ["brief_invalid_schema"];
+  }
+
+  return [];
+}
+
+function parseUserBrief(payload: unknown): string {
+  if (typeof payload === "string") {
+    return payload;
+  }
+
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.brief === "string") {
+      return record.brief;
+    }
+
+    if (typeof record.user_brief === "string") {
+      return record.user_brief;
+    }
+
+    return JSON.stringify(payload);
+  }
+
+  return String(payload ?? "");
+}
+
+export function createOpenAINormalizer(options: OpenAINormalizerOptions): {
+  normalize: (payload: unknown) => Promise<NormalizeBriefResult>;
+} {
+  const model = options.model ?? DEFAULT_MODEL;
+  const maxInputChars = options.maxInputChars ?? DEFAULT_MAX_INPUT_CHARS;
+
+  const normalizePrompt = getPromptRegistryEntry(NORMALIZE_BRIEF_PROMPT_ID);
+  const repairPrompt = getPromptRegistryEntry(REPAIR_BRIEF_PROMPT_ID);
+
+  return {
+    normalize: async (payload) => {
+      const rawBrief = parseUserBrief(payload);
+      const sanitizedBrief = sanitizeBrief(rawBrief, maxInputChars);
+      const normalizeMetadata = metadataFromPrompt(normalizePrompt, model);
+      const repairMetadata = metadataFromPrompt(repairPrompt, model);
+      let providerRef: string | null = null;
+
+      try {
+        const initialResponse = await options.client.createResponse({
+          model,
+          input: [
+            {
+              role: "system",
+              content: renderPromptTemplate(normalizePrompt.template, {
+                schema_version: BRIEF_SCHEMA_VERSION,
+              }),
+            },
+            {
+              role: "user",
+              content: `UNTRUSTED_BRIEF_CONTENT_START\n${sanitizedBrief}\nUNTRUSTED_BRIEF_CONTENT_END`,
+            },
+          ],
+        });
+        providerRef = initialResponse.id ?? null;
+
+        const initialText = extractOutputText(initialResponse) ?? "";
+        const initialCandidate = parseModelJson(initialText);
+        const initialParsed = parseNormalizedBrief(initialCandidate);
+        if (initialParsed.ok && !containsModelSelectedAssetIds(initialParsed.value)) {
+          return {
+            outcome: "ok",
+            normalizedBrief: initialParsed.value,
+            promptMetadata: [normalizeMetadata],
+            providerRef,
+            sanitizedBrief,
+            repairAttempted: false,
+          };
+        }
+
+        const reasonCodes = reasonCodesFromCandidate(initialText);
+        const repairResponse = await options.client.createResponse({
+          model,
+          input: [
+            {
+              role: "system",
+              content: renderPromptTemplate(repairPrompt.template, {
+                schema_version: BRIEF_SCHEMA_VERSION,
+                reason_codes: reasonCodes.join(",") || "brief_invalid_schema",
+                candidate_json: initialText || "{}",
+              }),
+            },
+            {
+              role: "user",
+              content: `UNTRUSTED_BRIEF_CONTENT_START\n${sanitizedBrief}\nUNTRUSTED_BRIEF_CONTENT_END`,
+            },
+          ],
+        });
+        providerRef = repairResponse.id ?? providerRef;
+
+        const repairedText = extractOutputText(repairResponse) ?? "";
+        const repairedCandidate = parseModelJson(repairedText);
+        const repairedParsed = parseNormalizedBrief(repairedCandidate);
+        if (repairedParsed.ok && !containsModelSelectedAssetIds(repairedParsed.value)) {
+          return {
+            outcome: "ok",
+            normalizedBrief: repairedParsed.value,
+            promptMetadata: [normalizeMetadata, repairMetadata],
+            providerRef,
+            sanitizedBrief,
+            repairAttempted: true,
+          };
+        }
+
+        return {
+          outcome: "needs_clarification",
+          reasonCodes: reasonCodesFromCandidate(repairedText),
+          promptMetadata: [normalizeMetadata, repairMetadata],
+          providerRef,
+          sanitizedBrief,
+          repairAttempted: true,
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "openai normalization call failed";
+        return {
+          outcome: "provider_failed",
+          reason: message,
+          promptMetadata: [normalizeMetadata],
+          providerRef,
+          sanitizedBrief,
+          repairAttempted: false,
+        };
+      }
+    },
+  };
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "1.0.0",
+  "briefId": "brief-ambiguous-001",
+  "campaignName": "Deal Pump Teaser",
+  "objective": "Create teaser but unsure whether to show can or mascot first",
+  "language": "en",
+  "aspectRatio": "16:9",
+  "unresolvedQuestions": [
+    "Should the first scene prioritize the can or mascot?"
+  ],
+  "scenes": [
+    {
+      "sceneId": "scene-ambiguous-intro",
+      "sceneType": "intro",
+      "visualCriticality": "supporting",
+      "narrative": "Open with atmosphere while final hero is undecided",
+      "desiredTags": ["background"],
+      "approvedAssetIds": ["studio-gradient-backdrop"],
+      "generationMode": "asset_derived",
+      "requestedTransform": "color_grade",
+      "durationSeconds": 5
+    }
+  ]
+}

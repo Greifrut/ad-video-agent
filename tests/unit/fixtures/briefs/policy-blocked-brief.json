@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "briefId": "brief-blocked-001",
+  "campaignName": "Deal Pump New Mascot Concept",
+  "objective": "Invent a brand-new mascot and logo in one shot",
+  "language": "en",
+  "aspectRatio": "16:9",
+  "unresolvedQuestions": [],
+  "scenes": [
+    {
+      "sceneId": "scene-blocked-brand",
+      "sceneType": "cta",
+      "visualCriticality": "brand_critical",
+      "narrative": "Create a fresh logo and mascot from text only",
+      "desiredTags": ["logo", "mascot", "hero"],
+      "approvedAssetIds": [],
+      "generationMode": "text_only",
+      "requestedTransform": "animate",
+      "durationSeconds": 6
+    }
+  ]
+}

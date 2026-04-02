@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "1.0.0",
+  "briefId": "brief-valid-001",
+  "campaignName": "Deal Pump Spring Push",
+  "objective": "Show product and mascot in a short social spot",
+  "language": "en",
+  "aspectRatio": "16:9",
+  "unresolvedQuestions": [],
+  "scenes": [
+    {
+      "sceneId": "scene-intro",
+      "sceneType": "intro",
+      "visualCriticality": "supporting",
+      "narrative": "Studio backdrop with subtle wordmark reveal",
+      "desiredTags": ["background", "logo"],
+      "approvedAssetIds": ["studio-gradient-backdrop", "brand-wordmark-primary"],
+      "generationMode": "asset_derived",
+      "requestedTransform": "overlay",
+      "durationSeconds": 4
+    },
+    {
+      "sceneId": "scene-product",
+      "sceneType": "product_focus",
+      "visualCriticality": "brand_critical",
+      "narrative": "Hero can with controlled motion",
+      "desiredTags": ["product", "hero", "packshot"],
+      "approvedAssetIds": ["product-can-classic-packshot"],
+      "generationMode": "asset_derived",
+      "requestedTransform": "animate",
+      "durationSeconds": 6
+    },
+    {
+      "sceneId": "scene-mascot",
+      "sceneType": "mascot_moment",
+      "visualCriticality": "brand_critical",
+      "narrative": "Mascot reacts to product splash",
+      "desiredTags": ["mascot", "social"],
+      "approvedAssetIds": ["mascot-astro-pump-core"],
+      "generationMode": "asset_derived",
+      "requestedTransform": "animate",
+      "durationSeconds": 5
+    },
+    {
+      "sceneId": "scene-cta",
+      "sceneType": "cta",
+      "visualCriticality": "brand_critical",
+      "narrative": "Strong wordmark lockup and call to action",
+      "desiredTags": ["logo", "hero"],
+      "approvedAssetIds": ["brand-wordmark-primary"],
+      "generationMode": "asset_derived",
+      "requestedTransform": "resize",
+      "durationSeconds": 3
+    }
+  ]
+}
