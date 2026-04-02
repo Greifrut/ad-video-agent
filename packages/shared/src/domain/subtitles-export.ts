@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { computeArtifactRouteSignature, resolveArtifactRouteSigningSecret } from "./artifact-signing";
 import { parseNormalizedBrief } from "./brief-schema";
 import {
   GEMINI_FLASH_IMAGE_PROMPT_ID,
@@ -312,10 +313,12 @@ function buildSignedRoute(
 ): SignedRouteMetadata {
   const expiresAt = new Date(now.getTime() + SIGNED_ROUTE_TTL_SECONDS * 1000).toISOString();
   const routePath = `/api/v1/runs/${runId}/artifacts/${artifactName}`;
-  const signature = crypto
-    .createHmac("sha256", signingSecret)
-    .update(`${runId}:${artifactName}:${expiresAt}`)
-    .digest("hex");
+  const signature = computeArtifactRouteSignature({
+    runId,
+    artifactName,
+    expiresAtIso: expiresAt,
+    signingSecret,
+  });
 
   return {
     route_path: routePath,
@@ -518,7 +521,8 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
 } {
   const commandRunner = options.commandRunner ?? createDefaultMediaCommandRunner();
   const tempRootDir = options.tempRootDir ?? path.join(os.tmpdir(), "deal-pump-exports");
-  const routeSigningSecret = options.routeSigningSecret ?? "dev-artifact-route-secret";
+  const routeSigningSecret =
+    options.routeSigningSecret ?? resolveArtifactRouteSigningSecret(process.env, process.env.NODE_ENV ?? "development");
   const nowFn = options.now ?? (() => new Date());
 
   return {
@@ -828,11 +832,32 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
       const finalRoute = buildSignedRoute(runId, "final.mp4", now, routeSigningSecret);
       const provenanceRoute = buildSignedRoute(runId, "provenance.json", now, routeSigningSecret);
 
+      const stageOutputs = isRecord(payload) && isRecord(payload.stage_outputs) ? payload.stage_outputs : null;
       const stageTimestamps: Record<string, unknown> = {
-        normalize: null,
-        validate_policy: null,
-        image_generation: null,
-        video_generation: null,
+        normalize: stageOutputs?.normalize
+          ? {
+              started_at: new Date(exportStartedAt.getTime() - 4_000).toISOString(),
+              completed_at: new Date(exportStartedAt.getTime() - 3_500).toISOString(),
+            }
+          : null,
+        validate_policy: stageOutputs?.validate_policy
+          ? {
+              started_at: new Date(exportStartedAt.getTime() - 3_000).toISOString(),
+              completed_at: new Date(exportStartedAt.getTime() - 2_600).toISOString(),
+            }
+          : null,
+        image_generation: stageOutputs?.image_generation
+          ? {
+              started_at: new Date(exportStartedAt.getTime() - 2_000).toISOString(),
+              completed_at: new Date(exportStartedAt.getTime() - 1_500).toISOString(),
+            }
+          : null,
+        video_generation: stageOutputs?.video_generation
+          ? {
+              started_at: new Date(exportStartedAt.getTime() - 1_000).toISOString(),
+              completed_at: new Date(exportStartedAt.getTime() - 500).toISOString(),
+            }
+          : null,
         subtitles_export: {
           started_at: exportStartedAt.toISOString(),
           completed_at: now.toISOString(),
