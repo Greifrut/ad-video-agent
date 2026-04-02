@@ -3,9 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import {
+  createRuntimeNormalizeStageHandler,
+  createRuntimeValidatePolicyStageHandler,
   createSQLiteRunEngine,
   createStageHandlers,
+  createSubtitlesExportStageHandler,
   parseNormalizedBrief,
+  type MediaCommandRunner,
   type RunPhase,
   type StageHandler,
 } from "@shared/index";
@@ -22,12 +26,73 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-async function createIsolatedEnvironment() {
+function createMockMediaRunner(): MediaCommandRunner {
+  const metadataByPath = new Map<string, { width: number; height: number; codec: string; fps: number; duration: number }>();
+
+  return async (command, args) => {
+    const outputPath = args[args.length - 1] ?? "";
+
+    if (command === "ffmpeg") {
+      if (outputPath) {
+        await fs.mkdir(path.dirname(outputPath), { recursive: true });
+        await fs.writeFile(outputPath, Buffer.from(`video:${path.basename(outputPath)}`));
+
+        const durationFromLavfi = args.find((value) => value.includes("color=") && value.includes(":d="));
+        const durationMatch = durationFromLavfi?.match(/:d=([0-9.]+)/);
+        const duration = durationMatch ? Number.parseFloat(durationMatch[1] ?? "2") : 2;
+        metadataByPath.set(outputPath, {
+          width: 1280,
+          height: 720,
+          codec: "h264",
+          fps: 24,
+          duration: Number.isFinite(duration) ? duration : 2,
+        });
+      }
+
+      return {
+        exitCode: 0,
+        stdout: "",
+        stderr: "",
+      };
+    }
+
+    const inputPath = outputPath;
+    const metadata = metadataByPath.get(inputPath) ?? {
+      width: 1280,
+      height: 720,
+      codec: "h264",
+      fps: 24,
+      duration: 5,
+    };
+
+    return {
+      exitCode: 0,
+      stdout: JSON.stringify({
+        streams: [
+          {
+            codec_type: "video",
+            codec_name: metadata.codec,
+            width: metadata.width,
+            height: metadata.height,
+            avg_frame_rate: `${metadata.fps}/1`,
+            duration: String(metadata.duration),
+          },
+        ],
+        format: { duration: String(metadata.duration) },
+      }),
+      stderr: "",
+    };
+  };
+}
+
+async function createIsolatedEnvironment(options?: { createDirs?: boolean }) {
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deal-pump-api-routes-"));
   const dataDir = path.join(tempRoot, "data");
   const artifactsDir = path.join(dataDir, "artifacts");
   const sqlitePath = path.join(dataDir, "deal-pump.sqlite");
-  await fs.mkdir(artifactsDir, { recursive: true });
+  if (options?.createDirs !== false) {
+    await fs.mkdir(artifactsDir, { recursive: true });
+  }
 
   Object.assign(process.env, {
     NODE_ENV: "test",
@@ -430,5 +495,98 @@ describe("api-routes", () => {
       },
     );
     expect(invalidSignatureResponse.status).toBe(403);
+  });
+
+  test("start route succeeds when data directories are initially missing", async () => {
+    await createIsolatedEnvironment({ createDirs: false });
+
+    const response = await startRunRoute(
+      new NextRequest("http://localhost/api/v1/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "missing-dirs-start",
+          "x-forwarded-for": "203.0.113.77",
+        },
+        body: JSON.stringify({
+          brief: "Create a simple fixture ad",
+          fixtureMode: true,
+        }),
+      }),
+    );
+
+    expect(response.status).toBe(202);
+    const payload = (await response.json()) as { runId: string };
+    expect(payload.runId).toBeTruthy();
+  });
+
+  test("fixture-mode runtime composition reaches completed with status intermediate and artifact fields", async () => {
+    const env = await createIsolatedEnvironment();
+
+    const startResponse = await startRunRoute(
+      new NextRequest("http://localhost/api/v1/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": "fixture-runtime-complete",
+          "x-forwarded-for": "203.0.113.201",
+        },
+        body: JSON.stringify({
+          brief: "Create a simple fixture ad",
+          fixtureMode: true,
+        }),
+      }),
+    );
+
+    expect(startResponse.status).toBe(202);
+    const startPayload = (await startResponse.json()) as { runId: string };
+
+    const handlers = createStageHandlers({
+      normalize: createRuntimeNormalizeStageHandler(),
+      validatePolicy: createRuntimeValidatePolicyStageHandler(),
+      subtitlesExport: createSubtitlesExportStageHandler({
+        artifactsRootDir: env.artifactsDir,
+        tempRootDir: path.join(env.tempRoot, "tmp"),
+        fixtureMode: false,
+        commandRunner: createMockMediaRunner(),
+        routeSigningSecret: "route-secret",
+        now: () => new Date("2026-04-02T12:30:00.000Z"),
+      }),
+    });
+
+    await processRunUntil(env.sqlitePath, startPayload.runId, handlers, "completed");
+
+    const statusResponse = await getRunStatusRoute(
+      new NextRequest(`http://localhost/api/v1/runs/${startPayload.runId}`, {
+        method: "GET",
+        headers: {
+          "x-forwarded-for": "203.0.113.201",
+        },
+      }),
+      {
+        params: Promise.resolve({ runId: startPayload.runId }),
+      },
+    );
+
+    expect(statusResponse.status).toBe(200);
+    const statusPayload = (await statusResponse.json()) as {
+      phase: string;
+      outcome: string;
+      normalizedBrief?: unknown;
+      selectedAssetIds?: string[];
+      resultUrl?: string;
+      provenanceUrl?: string;
+    };
+
+    expect(statusPayload.phase).toBe("completed");
+    expect(statusPayload.outcome).toBe("ok");
+    expect(statusPayload.normalizedBrief).toBeDefined();
+    expect(statusPayload.selectedAssetIds).toEqual([
+      "brand-wordmark-primary",
+      "product-can-classic-packshot",
+      "studio-gradient-backdrop",
+    ]);
+    expect(statusPayload.resultUrl).toContain(`/api/v1/runs/${startPayload.runId}/artifacts/final.mp4`);
+    expect(statusPayload.provenanceUrl).toContain(`/api/v1/runs/${startPayload.runId}/artifacts/provenance.json`);
   });
 });

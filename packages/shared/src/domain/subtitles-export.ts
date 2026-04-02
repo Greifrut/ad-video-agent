@@ -158,6 +158,13 @@ function createDefaultMediaCommandRunner(): MediaCommandRunner {
       child.stderr.on("data", (chunk) => {
         stderr += String(chunk);
       });
+      child.on("error", (error) => {
+        resolve({
+          exitCode: 1,
+          stdout,
+          stderr: `${stderr}${error.message}`,
+        });
+      });
       child.on("close", (code) => {
         resolve({
           exitCode: code ?? 1,

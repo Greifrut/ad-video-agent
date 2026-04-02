@@ -39,7 +39,13 @@ async function main(): Promise<void> {
   const child = spawn("next", [mode, ...nextArgs], {
     stdio: "inherit",
     shell: true,
-    env: process.env,
+    env: {
+      ...process.env,
+      DATA_DIR: environment.dataDir,
+      SQLITE_DB_PATH: environment.sqlitePath,
+      ARTIFACTS_DIR: environment.artifactsDir,
+      WORKER_CONCURRENCY: String(environment.workerConcurrency),
+    },
   });
 
   child.on("exit", (code) => {

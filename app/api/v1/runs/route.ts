@@ -91,7 +91,8 @@ export async function POST(request: NextRequest): Promise<Response> {
         status: started.reused ? 200 : 202,
       },
     );
-  } catch {
+  } catch (error) {
+    console.error("[api][runs][start] failed to start run", { idempotencyKey, error });
     return jsonError(500, "internal_error", "Failed to start run.");
   }
 }

@@ -14,7 +14,7 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "Deal Pump Ad Video Agent",
-  description: "Bootstrap shell for the single-service run engine.",
+  description: "Public demo UI for the approved-asset generative video pipeline.",
 };
 
 export default function RootLayout({

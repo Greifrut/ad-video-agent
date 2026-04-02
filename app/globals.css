@@ -1,26 +1,72 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --background: #eef3ff;
+  --foreground: #111827;
+  --surface: rgba(255, 255, 255, 0.78);
+  --surface-elevated: rgba(255, 255, 255, 0.94);
+  --muted: #52607a;
+  --muted-strong: #334155;
+  --border: rgba(90, 114, 157, 0.18);
+  --accent: #1d9bf0;
+  --accent-soft: rgba(29, 155, 240, 0.12);
+  --success: #0f9f6e;
+  --warning: #c57a10;
+  --danger: #dc4f68;
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+    --background: #07111f;
+    --foreground: #f7fbff;
+    --surface: rgba(8, 18, 34, 0.78);
+    --surface-elevated: rgba(10, 24, 45, 0.94);
+    --muted: #9fb0c7;
+    --muted-strong: #d8e4f2;
+    --border: rgba(149, 179, 224, 0.16);
+    --accent: #58c2ff;
+    --accent-soft: rgba(88, 194, 255, 0.12);
+    --success: #34d399;
+    --warning: #f6ad55;
+    --danger: #fb7185;
   }
 }
 
 body {
-  background: var(--background);
+  background:
+    radial-gradient(circle at top left, rgba(88, 194, 255, 0.2), transparent 30%),
+    radial-gradient(circle at top right, rgba(129, 140, 248, 0.14), transparent 25%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 24rem),
+    var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+::selection {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+}
+
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 2rem;
+  background: var(--surface);
+  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.12);
+  backdrop-filter: blur(24px);
 }

@@ -118,6 +118,10 @@ export type {
   VeoVideoStageOptions,
   SubtitlesExportStageOptions,
 } from "./run-engine/stage-handlers";
+export {
+  createRuntimeNormalizeStageHandler,
+  createRuntimeValidatePolicyStageHandler,
+} from "./run-engine/runtime-stage-handlers";
 export { computeEventDigest, hashSha256 } from "./run-engine/digest";
 export type {
   ClaimedJob,
