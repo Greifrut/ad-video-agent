@@ -1,4 +1,4 @@
-import { runEngineCheck } from "@shared/index";
+import { runEngineCheck } from "../packages/shared/src/index";
 
 async function main(): Promise<void> {
   const result = await runEngineCheck(process.env);

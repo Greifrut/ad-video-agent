@@ -243,6 +243,7 @@ export function PublicDemoPage() {
   const [brief, setBrief] = useState(SAMPLE_BRIEF);
   const [fixtureMode, setFixtureMode] = useState(true);
   const [isStarting, setIsStarting] = useState(false);
+  const [pollingRunId, setPollingRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<RunStatusPayload | null>(null);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [provenance, setProvenance] = useState<ProvenancePayload | null>(null);
@@ -261,7 +262,7 @@ export function PublicDemoPage() {
   }, [runStatus?.normalizedBrief]);
 
   useEffect(() => {
-    if (!runStatus?.runId || isTerminalStatus(runStatus)) {
+    if (!pollingRunId) {
       return;
     }
 
@@ -270,7 +271,7 @@ export function PublicDemoPage() {
 
     const poll = async () => {
       try {
-        const response = await fetch(`/api/v1/runs/${runStatus.runId}`, {
+        const response = await fetch(`/api/v1/runs/${pollingRunId}`, {
           method: "GET",
           cache: "no-store",
         });
@@ -288,7 +289,9 @@ export function PublicDemoPage() {
         const nextStatus = payload as RunStatusPayload;
         setRunStatus(nextStatus);
 
-        if (!isTerminalStatus(nextStatus)) {
+        if (isTerminalStatus(nextStatus)) {
+          setPollingRunId(null);
+        } else {
           timeoutId = setTimeout(poll, POLL_INTERVAL_MS);
         }
       } catch (error) {
@@ -297,6 +300,7 @@ export function PublicDemoPage() {
         }
 
         setRequestError(error instanceof Error ? error.message : "Failed to load run status.");
+        setPollingRunId(null);
       }
     };
 
@@ -308,15 +312,19 @@ export function PublicDemoPage() {
         clearTimeout(timeoutId);
       }
     };
-  }, [runStatus]);
+  }, [pollingRunId]);
+
+  const provenanceUrl = runStatus?.provenanceUrl;
 
   useEffect(() => {
-    if (!runStatus?.provenanceUrl) {
+    if (!provenanceUrl) {
       setProvenance(null);
       setProvenanceError(null);
       setIsLoadingProvenance(false);
       return;
     }
+
+    const resolvedProvenanceUrl = provenanceUrl;
 
     let cancelled = false;
 
@@ -325,7 +333,7 @@ export function PublicDemoPage() {
       setProvenanceError(null);
 
       try {
-        const response = await fetch(runStatus.provenanceUrl, {
+        const response = await fetch(resolvedProvenanceUrl, {
           method: "GET",
           cache: "no-store",
         });
@@ -355,7 +363,7 @@ export function PublicDemoPage() {
     return () => {
       cancelled = true;
     };
-  }, [runStatus?.provenanceUrl]);
+  }, [provenanceUrl]);
 
   const currentPhaseIndex = runStatus ? PHASE_STEPS.findIndex((step) => step.phase === runStatus.phase) : -1;
   const messageTone = statusTone(runStatus);
@@ -401,8 +409,10 @@ export function PublicDemoPage() {
         phase: "submitted",
         outcome: "none",
       });
+      setPollingRunId(nextRunId);
     } catch (error) {
       setRunStatus(null);
+      setPollingRunId(null);
       setRequestError(error instanceof Error ? error.message : "Failed to start the run.");
     } finally {
       setIsStarting(false);

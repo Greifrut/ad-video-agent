@@ -3,7 +3,7 @@ import {
   loadBootstrapEnvironment,
   redactSecrets,
   validateBootstrapEnvironment,
-} from "@shared/index";
+} from "../packages/shared/src/index";
 
 type Mode = "dev" | "start";
 
