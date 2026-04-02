@@ -10,6 +10,12 @@
 - Signed application routes for final MP4 and provenance delivery, backed by files stored under `/data/artifacts/runs/{runId}/`.
 - Container packaging for one Railway-style service that runs both the web app and the worker via `supervisord`.
 
+## How I structured the work
+
+I structured the implementation to de-risk the pipeline in layers: first the shared contracts and approved-asset rules, then the SQLite run engine and worker leasing model, then the AI stage boundaries, then export and provenance, then the API surface, then the public UI, and finally deployment hardening. That sequencing let each layer stabilize before the next one depended on it.
+
+I also treated fixture mode as the primary reviewer path from early on. The goal was to keep the exact same run engine, API contract, UI states, and export flow that production uses, while removing live-provider credentials and uptime as review blockers. The main tradeoff is that the submission shows stronger systems engineering signal than a minimal 6-hour shortcut, but it stays reviewer-friendly because the happy path is deterministic and publicly deployable.
+
 ## Architecture
 
 ### Deployment shape

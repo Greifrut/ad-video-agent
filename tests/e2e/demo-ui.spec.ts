@@ -21,7 +21,9 @@ test.describe("public demo UI", () => {
     await expect(page.getByTestId("provenance-panel")).toContainText("Source asset IDs", {
       timeout: 60_000,
     });
-    await expect(page.getByTestId("provenance-panel")).toContainText("fixture-runtime");
+    await expect(page.getByTestId("provenance-panel")).toContainText("generate_scene_still_gemini_2_5_flash_image");
+    await expect(page.getByTestId("provenance-panel")).toContainText("generate_scene_video_veo_3_1_i2v");
+    await expect(page.getByTestId("provenance-panel")).toContainText("render_scene_copy_subtitles_v1");
 
     const videoSource = await page.getByTestId("video-player").getAttribute("src");
     expect(videoSource).toContain("/api/v1/runs/");
