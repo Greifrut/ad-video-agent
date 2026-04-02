@@ -14,6 +14,10 @@ import {
   createVeoVideoGenerator,
   type VeoVideoClient,
 } from "../domain/veo-video";
+import {
+  createSubtitlesExportGenerator,
+  type MediaCommandRunner,
+} from "../domain/subtitles-export";
 
 type MockPlan = {
   transient_failures?: Partial<Record<RunEngineStage, number>>;
@@ -63,6 +67,7 @@ export type StageHandlerFactoryOptions = {
   validatePolicy?: StageHandler;
   imageGeneration?: StageHandler;
   videoGeneration?: StageHandler;
+  subtitlesExport?: StageHandler;
 };
 
 export type OpenAINormalizeStageOptions = {
@@ -84,6 +89,15 @@ export type VeoVideoStageOptions = {
     now: () => number;
     sleep: (ms: number) => Promise<void>;
   };
+};
+
+export type SubtitlesExportStageOptions = {
+  artifactsRootDir: string;
+  tempRootDir?: string;
+  fixtureMode?: boolean;
+  commandRunner?: MediaCommandRunner;
+  routeSigningSecret?: string;
+  now?: () => Date;
 };
 
 export function createOpenAINormalizeStageHandler(
@@ -220,18 +234,54 @@ export function createVeoVideoStageHandler(options: VeoVideoStageOptions): Stage
   };
 }
 
+export function createSubtitlesExportStageHandler(options: SubtitlesExportStageOptions): StageHandler {
+  const generator = createSubtitlesExportGenerator({
+    artifactsRootDir: options.artifactsRootDir,
+    tempRootDir: options.tempRootDir,
+    fixtureMode: options.fixtureMode,
+    commandRunner: options.commandRunner,
+    routeSigningSecret: options.routeSigningSecret,
+    now: options.now,
+  });
+
+  return async (context) => {
+    const result = await generator.generate(context.payload, context.runId);
+
+    if (result.outcome === "ok") {
+      return {
+        type: "success",
+        data: result.stageData,
+      };
+    }
+
+    if (result.outcome === "needs_clarification") {
+      return {
+        type: "terminal_outcome",
+        outcome: "needs_clarification",
+        reason: result.reason,
+      };
+    }
+
+    return {
+      type: "fatal_error",
+      reason: result.reason,
+    };
+  };
+}
+
 export function createStageHandlers(options: StageHandlerFactoryOptions = {}): StageHandlers {
   const normalizeStage = options.normalize ?? runMockStage;
   const validatePolicyStage = options.validatePolicy ?? runMockStage;
   const imageGenerationStage = options.imageGeneration ?? runMockStage;
   const videoGenerationStage = options.videoGeneration ?? runMockStage;
+  const subtitlesExportStage = options.subtitlesExport ?? runMockStage;
 
   return {
     normalize: normalizeStage,
     validate_policy: validatePolicyStage,
     image_generation: imageGenerationStage,
     video_generation: videoGenerationStage,
-    subtitles_export: runMockStage,
+    subtitles_export: subtitlesExportStage,
   };
 }
 

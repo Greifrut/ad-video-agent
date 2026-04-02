@@ -89,6 +89,11 @@ export type {
   VeoVideoGeneratorOptions,
   VeoVideoGeneratorResult,
 } from "./domain/veo-video";
+export { createSubtitlesExportGenerator } from "./domain/subtitles-export";
+export type {
+  MediaCommandRunner,
+  SubtitlesExportGeneratorOptions,
+} from "./domain/subtitles-export";
 export {
   createOpenAINormalizer,
 } from "./domain/openai-normalizer";
@@ -105,9 +110,14 @@ export {
   createMockStageHandlers,
   createOpenAINormalizeStageHandler,
   createStageHandlers,
+  createSubtitlesExportStageHandler,
   createVeoVideoStageHandler,
 } from "./run-engine/stage-handlers";
-export type { GeminiImageStageOptions, VeoVideoStageOptions } from "./run-engine/stage-handlers";
+export type {
+  GeminiImageStageOptions,
+  VeoVideoStageOptions,
+  SubtitlesExportStageOptions,
+} from "./run-engine/stage-handlers";
 export { computeEventDigest, hashSha256 } from "./run-engine/digest";
 export type {
   ClaimedJob,

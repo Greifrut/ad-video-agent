@@ -1,5 +1,6 @@
 import {
-  createMockStageHandlers,
+  createStageHandlers,
+  createSubtitlesExportStageHandler,
   createSQLiteRunEngine,
   loadBootstrapEnvironment,
   redactSecrets,
@@ -37,7 +38,13 @@ function failFastOnInvalidBootstrap(): void {
 async function main(): Promise<void> {
   failFastOnInvalidBootstrap();
   const configuration = loadBootstrapEnvironment(process.env);
-  const handlers = createMockStageHandlers();
+  const handlers = createStageHandlers({
+    subtitlesExport: createSubtitlesExportStageHandler({
+      artifactsRootDir: configuration.artifactsDir,
+      fixtureMode: configuration.nodeEnv !== "production",
+      routeSigningSecret: process.env.ARTIFACT_ROUTE_SIGNING_SECRET ?? "dev-artifact-route-secret",
+    }),
+  });
   const runEngine = await createSQLiteRunEngine({
     sqlitePath: configuration.sqlitePath,
     workerId: "worker-main",

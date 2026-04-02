@@ -1,0 +1,434 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { NextRequest } from "next/server";
+import {
+  createSQLiteRunEngine,
+  createStageHandlers,
+  parseNormalizedBrief,
+  type RunPhase,
+  type StageHandler,
+} from "@shared/index";
+import { resetRateLimitersForTests } from "@/app/api/_server/rate-limit";
+import { resetRunEngineForTests } from "@/app/api/_server/run-engine-instance";
+import { POST as startRunRoute } from "@/app/api/v1/runs/route";
+import { GET as getRunStatusRoute } from "@/app/api/v1/runs/[runId]/route";
+import { GET as getArtifactRoute } from "@/app/api/v1/runs/[runId]/artifacts/[artifactName]/route";
+import blockedBriefFixture from "../unit/fixtures/briefs/policy-blocked-brief.json";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+async function createIsolatedEnvironment() {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deal-pump-api-routes-"));
+  const dataDir = path.join(tempRoot, "data");
+  const artifactsDir = path.join(dataDir, "artifacts");
+  const sqlitePath = path.join(dataDir, "deal-pump.sqlite");
+  await fs.mkdir(artifactsDir, { recursive: true });
+
+  Object.assign(process.env, {
+    NODE_ENV: "test",
+    DATA_DIR: dataDir,
+    ARTIFACTS_DIR: artifactsDir,
+    SQLITE_DB_PATH: sqlitePath,
+    WORKER_CONCURRENCY: "1",
+  });
+
+  return {
+    tempRoot,
+    dataDir,
+    artifactsDir,
+    sqlitePath,
+  };
+}
+
+async function processRunUntil(
+  sqlitePath: string,
+  runId: string,
+  handlers: ReturnType<typeof createStageHandlers>,
+  targetPhase: RunPhase,
+): Promise<void> {
+  const engine = await createSQLiteRunEngine({
+    sqlitePath,
+    leaseDurationMs: 200,
+    retryBackoffBaseMs: 5,
+  });
+  await engine.initialize();
+
+  for (let index = 0; index < 120; index += 1) {
+    const claim = await engine.claimNextJob();
+    if (!claim) {
+      await sleep(10);
+      const current = await engine.getRunProjection(runId);
+      if (current.phase === targetPhase) {
+        break;
+      }
+      continue;
+    }
+
+    await engine.processClaim(claim, handlers);
+    const projection = await engine.getRunProjection(runId);
+    if (projection.phase === targetPhase) {
+      break;
+    }
+  }
+
+  await engine.close();
+}
+
+describe("api-routes", () => {
+  beforeEach(async () => {
+    resetRateLimitersForTests();
+    await resetRunEngineForTests();
+  });
+
+  afterEach(async () => {
+    resetRateLimitersForTests();
+    await resetRunEngineForTests();
+  });
+
+  test("start route requires Idempotency-Key and reuses run ID on duplicate key", async () => {
+    await createIsolatedEnvironment();
+
+    const missingIdempotencyRequest = new NextRequest("http://localhost/api/v1/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-forwarded-for": "198.51.100.9",
+      },
+      body: JSON.stringify({ brief: "missing header" }),
+    });
+
+    const missingResponse = await startRunRoute(missingIdempotencyRequest);
+    expect(missingResponse.status).toBe(400);
+
+    const firstRequest = new NextRequest("http://localhost/api/v1/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "dup-key-1",
+        "x-forwarded-for": "198.51.100.9",
+      },
+      body: JSON.stringify({ brief: "Generate fixture ad", fixtureMode: true }),
+    });
+    const firstResponse = await startRunRoute(firstRequest);
+    expect(firstResponse.status).toBe(202);
+    const firstBody = (await firstResponse.json()) as { runId: string };
+    expect(firstBody.runId).toBeTruthy();
+
+    const duplicateRequest = new NextRequest("http://localhost/api/v1/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "dup-key-1",
+        "x-forwarded-for": "198.51.100.9",
+      },
+      body: JSON.stringify({ brief: "Generate fixture ad", fixtureMode: true }),
+    });
+    const duplicateResponse = await startRunRoute(duplicateRequest);
+    expect(duplicateResponse.status).toBe(200);
+    const duplicateBody = (await duplicateResponse.json()) as { runId: string };
+    expect(duplicateBody.runId).toBe(firstBody.runId);
+  });
+
+  test("start route rejects malformed body and enforces start rate limits", async () => {
+    await createIsolatedEnvironment();
+
+    const malformedBodyRequest = new NextRequest("http://localhost/api/v1/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "malformed-1",
+        "x-forwarded-for": "203.0.113.10",
+      },
+      body: JSON.stringify({ brief: 42 }),
+    });
+
+    const malformedResponse = await startRunRoute(malformedBodyRequest);
+    expect(malformedResponse.status).toBe(400);
+
+    for (let index = 0; index < 5; index += 1) {
+      const request = new NextRequest("http://localhost/api/v1/runs", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": `rate-start-${index}`,
+          "x-forwarded-for": "203.0.113.20",
+        },
+        body: JSON.stringify({ brief: `Rate limit start ${index}` }),
+      });
+      const response = await startRunRoute(request);
+      expect(response.status).toBe(202);
+    }
+
+    const blockedRequest = new NextRequest("http://localhost/api/v1/runs", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "rate-start-blocked",
+        "x-forwarded-for": "203.0.113.20",
+      },
+      body: JSON.stringify({ brief: "Rate limit blocked" }),
+    });
+    const blockedResponse = await startRunRoute(blockedRequest);
+    expect(blockedResponse.status).toBe(429);
+    expect(blockedResponse.headers.get("retry-after")).toBeTruthy();
+  });
+
+  test("status route returns policy_blocked payload and enforces status rate limit", async () => {
+    const env = await createIsolatedEnvironment();
+
+    const parsedBlocked = parseNormalizedBrief(blockedBriefFixture);
+    expect(parsedBlocked.ok).toBe(true);
+    if (!parsedBlocked.ok) {
+      throw new Error("Blocked brief fixture must parse.");
+    }
+
+    const setupEngine = await createSQLiteRunEngine({ sqlitePath: env.sqlitePath, leaseDurationMs: 200 });
+    await setupEngine.initialize();
+    const started = await setupEngine.startRun({
+      idempotencyKey: "blocked-run",
+      payload: {
+        brief: "blocked",
+        fixture_mode: true,
+      },
+    });
+    await setupEngine.close();
+
+    const normalizeStage: StageHandler = async () => {
+      return {
+        type: "success",
+        data: {
+          normalize: {
+            prompt_metadata: [],
+            repair_attempted: false,
+            sanitized_brief: "sanitized",
+            normalized_brief: parsedBlocked.value,
+            reason_codes: [],
+          },
+          normalized_brief: parsedBlocked.value,
+        },
+      };
+    };
+    const validatePolicyStage: StageHandler = async () => {
+      return {
+        type: "terminal_outcome",
+        outcome: "policy_blocked",
+        reason: "Invented brand-critical media is blocked.",
+        data: {
+          validate_policy: {
+            reason_codes: ["invented_brand_critical_media", "brand_critical_asset_required"],
+          },
+          normalized_brief: parsedBlocked.value,
+        },
+      };
+    };
+
+    await processRunUntil(
+      env.sqlitePath,
+      started.runId,
+      createStageHandlers({
+        normalize: normalizeStage,
+        validatePolicy: validatePolicyStage,
+      }),
+      "failed",
+    );
+
+    const statusResponse = await getRunStatusRoute(
+      new NextRequest(`http://localhost/api/v1/runs/${started.runId}`, {
+        method: "GET",
+        headers: {
+          "x-forwarded-for": "192.0.2.100",
+        },
+      }),
+      {
+        params: Promise.resolve({ runId: started.runId }),
+      },
+    );
+    expect(statusResponse.status).toBe(200);
+
+    const statusPayload = (await statusResponse.json()) as {
+      runId: string;
+      phase: string;
+      outcome: string;
+      errorCode?: string;
+      normalizedBrief?: unknown;
+    };
+
+    expect(statusPayload.runId).toBe(started.runId);
+    expect(statusPayload.phase).toBe("failed");
+    expect(statusPayload.outcome).toBe("policy_blocked");
+    expect(statusPayload.errorCode).toBe("invented_brand_critical_media");
+    expect(statusPayload.normalizedBrief).toBeDefined();
+
+    for (let index = 0; index < 60; index += 1) {
+      const response = await getRunStatusRoute(
+        new NextRequest(`http://localhost/api/v1/runs/${started.runId}`, {
+          method: "GET",
+          headers: {
+            "x-forwarded-for": "192.0.2.120",
+          },
+        }),
+        {
+          params: Promise.resolve({ runId: started.runId }),
+        },
+      );
+      expect(response.status).toBe(200);
+    }
+
+    const limitedResponse = await getRunStatusRoute(
+      new NextRequest(`http://localhost/api/v1/runs/${started.runId}`, {
+        method: "GET",
+        headers: {
+          "x-forwarded-for": "192.0.2.120",
+        },
+      }),
+      {
+        params: Promise.resolve({ runId: started.runId }),
+      },
+    );
+    expect(limitedResponse.status).toBe(429);
+  });
+
+  test("artifact route serves signed artifacts without exposing filesystem paths", async () => {
+    const env = await createIsolatedEnvironment();
+
+    const setupEngine = await createSQLiteRunEngine({ sqlitePath: env.sqlitePath, leaseDurationMs: 200 });
+    await setupEngine.initialize();
+    const started = await setupEngine.startRun({
+      idempotencyKey: "artifact-run",
+      payload: {
+        brief: "artifact",
+        fixture_mode: true,
+      },
+    });
+    await setupEngine.close();
+
+    const normalizeStage: StageHandler = async () => {
+      return {
+        type: "success",
+        data: {
+          normalize: {
+            prompt_metadata: [],
+            repair_attempted: false,
+            sanitized_brief: "sanitized",
+            normalized_brief: {
+              briefId: "b1",
+            },
+            reason_codes: [],
+          },
+        },
+      };
+    };
+
+    const validatePolicyStage: StageHandler = async () => {
+      return {
+        type: "success",
+        data: {
+          validate_policy: {
+            selected_asset_ids: ["brand-wordmark-primary"],
+          },
+        },
+      };
+    };
+
+    const imageStage: StageHandler = async () => {
+      return {
+        type: "success",
+        data: {
+          image_generation: {
+            source_asset_ids: ["brand-wordmark-primary"],
+          },
+        },
+      };
+    };
+
+    const videoStage: StageHandler = async () => {
+      return {
+        type: "success",
+        data: {
+          video_generation: {
+            derived_video_scenes: [],
+          },
+        },
+      };
+    };
+
+    const expiresAt = "2036-04-02T12:00:00.000Z";
+    const subtitlesStage: StageHandler = async (context) => {
+      return {
+        type: "success",
+        data: {
+          subtitles_export: {
+            artifact_routes: {
+              final_mp4: {
+                route_path: `/api/v1/runs/${context.runId}/artifacts/final.mp4`,
+                signed_path:
+                  `/api/v1/runs/${context.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-final`,
+                expires_at: expiresAt,
+                ttl_seconds: 24 * 60 * 60,
+              },
+              provenance_json: {
+                route_path: `/api/v1/runs/${context.runId}/artifacts/provenance.json`,
+                signed_path:
+                  `/api/v1/runs/${context.runId}/artifacts/provenance.json?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-provenance`,
+                expires_at: expiresAt,
+                ttl_seconds: 24 * 60 * 60,
+              },
+            },
+          },
+        },
+      };
+    };
+
+    await processRunUntil(
+      env.sqlitePath,
+      started.runId,
+      createStageHandlers({
+        normalize: normalizeStage,
+        validatePolicy: validatePolicyStage,
+        imageGeneration: imageStage,
+        videoGeneration: videoStage,
+        subtitlesExport: subtitlesStage,
+      }),
+      "completed",
+    );
+
+    const artifactDir = path.join(env.artifactsDir, "runs", started.runId);
+    await fs.mkdir(artifactDir, { recursive: true });
+    await fs.writeFile(path.join(artifactDir, "final.mp4"), Buffer.from("final-video"));
+    await fs.writeFile(path.join(artifactDir, "provenance.json"), JSON.stringify({ run_id: started.runId }));
+
+    const finalResponse = await getArtifactRoute(
+      new Request(
+        `http://localhost/api/v1/runs/${started.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-final`,
+      ),
+      {
+        params: Promise.resolve({
+          runId: started.runId,
+          artifactName: "final.mp4",
+        }),
+      },
+    );
+
+    expect(finalResponse.status).toBe(200);
+    expect(finalResponse.headers.get("content-type")).toBe("video/mp4");
+    await expect(finalResponse.text()).resolves.toContain("final-video");
+
+    const invalidSignatureResponse = await getArtifactRoute(
+      new Request(
+        `http://localhost/api/v1/runs/${started.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=wrong-signature`,
+      ),
+      {
+        params: Promise.resolve({
+          runId: started.runId,
+          artifactName: "final.mp4",
+        }),
+      },
+    );
+    expect(invalidSignatureResponse.status).toBe(403);
+  });
+});

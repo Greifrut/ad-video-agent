@@ -456,7 +456,7 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
       const next = nextStage(claim.stage);
       if (!next) {
         const completedResult = {
-          final_artifact: `mock://${claim.runId}/final.mp4`,
+          ...(result.data ?? {}),
           stages: STAGE_ORDER,
         };
         await client.run(
