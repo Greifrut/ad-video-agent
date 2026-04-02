@@ -9,6 +9,7 @@ export {
   loadBootstrapEnvironment,
   validateBootstrapEnvironment,
 } from "./bootstrap/env";
+export type { BootstrapEnvironment } from "./bootstrap/env";
 export { runEngineCheck } from "./bootstrap/run-engine-check";
 export { redactSecrets } from "./security/redaction";
 export {
@@ -72,15 +73,22 @@ export {
   REPAIR_BRIEF_PROMPT_ID,
   VEO_IMAGE_TO_VIDEO_PROMPT_ID,
 } from "./domain/prompt-registry";
-export { createGeminiImageGenerator } from "./domain/gemini-image";
+export {
+  createGeminiImageGenerator,
+  createVertexGeminiFlashImageClient,
+} from "./domain/gemini-image";
 export type {
   GeminiFlashImageClient,
   GeminiImageGeneratorResult,
   GeminiImageGeneratorOptions,
   GeminiSceneStillRequest,
   GeminiSceneStillResponse,
+  VertexGeminiFlashImageClientOptions,
 } from "./domain/gemini-image";
-export { createVeoVideoGenerator } from "./domain/veo-video";
+export {
+  createVeoVideoGenerator,
+  createVertexVeoVideoClient,
+} from "./domain/veo-video";
 export type {
   VeoSceneVideoStartRequest,
   VeoSceneVideoStatusRequest,
@@ -88,6 +96,7 @@ export type {
   VeoVideoClient,
   VeoVideoGeneratorOptions,
   VeoVideoGeneratorResult,
+  VertexVeoVideoClientOptions,
 } from "./domain/veo-video";
 export { createSubtitlesExportGenerator } from "./domain/subtitles-export";
 export type {
@@ -101,10 +110,12 @@ export {
 } from "./domain/artifact-signing";
 export {
   createOpenAINormalizer,
+  createOpenAIResponsesSdkClient,
 } from "./domain/openai-normalizer";
 export type {
   NormalizeBriefResult,
   OpenAIResponsesClient,
+  OpenAIResponsesSdkClientOptions,
   OpenAIResponsesRequest,
   OpenAIResponsesResult,
   PromptMetadata,

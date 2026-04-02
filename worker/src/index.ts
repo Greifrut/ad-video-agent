@@ -3,9 +3,12 @@ import path from "node:path";
 import {
   createGeminiImageStageHandler,
   createOpenAINormalizeStageHandler,
+  createOpenAIResponsesSdkClient,
   createRuntimeValidatePolicyStageHandler,
   createStageHandlers,
   createSubtitlesExportStageHandler,
+  createVertexGeminiFlashImageClient,
+  createVertexVeoVideoClient,
   createSQLiteRunEngine,
   createVeoVideoStageHandler,
   loadBootstrapEnvironment,
@@ -14,6 +17,7 @@ import {
   type GeminiFlashImageClient,
   type MediaCommandRunner,
   type OpenAIResponsesClient,
+  type StageHandler,
   type VeoVideoClient,
   validateBootstrapEnvironment,
 } from "../../packages/shared/src/index";
@@ -185,6 +189,33 @@ function createFixtureVeoClient(): VeoVideoClient {
   };
 }
 
+function isFixtureModePayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return false;
+  }
+
+  const fixtureMode = (payload as { fixture_mode?: unknown }).fixture_mode;
+  return fixtureMode === true;
+}
+
+function composeProviderStageHandler(
+  providerMode: "fixture" | "live",
+  fixtureHandler: StageHandler,
+  liveHandler: StageHandler,
+): StageHandler {
+  if (providerMode === "fixture") {
+    return fixtureHandler;
+  }
+
+  return async (context) => {
+    if (isFixtureModePayload(context.payload)) {
+      return await fixtureHandler(context);
+    }
+
+    return await liveHandler(context);
+  };
+}
+
 function failFastOnInvalidBootstrap(): void {
   const configuration = loadBootstrapEnvironment(process.env);
   const validationErrors = validateBootstrapEnvironment(configuration);
@@ -199,6 +230,12 @@ function failFastOnInvalidBootstrap(): void {
     SQLITE_DB_PATH: configuration.sqlitePath,
     ARTIFACTS_DIR: configuration.artifactsDir,
     WORKER_CONCURRENCY: configuration.workerConcurrency,
+    AI_PROVIDER_MODE: configuration.providerMode,
+    VERTEX_PROJECT: configuration.vertexProject,
+    VERTEX_LOCATION: configuration.vertexLocation,
+    VERTEX_API_VERSION: configuration.vertexApiVersion,
+    OPENAI_API_KEY: configuration.openaiApiKey,
+    GOOGLE_APPLICATION_CREDENTIALS: configuration.googleApplicationCredentials,
   });
 
   console.log("[worker] bootstrap ready", safeConfig);
@@ -207,27 +244,78 @@ function failFastOnInvalidBootstrap(): void {
 async function main(): Promise<void> {
   failFastOnInvalidBootstrap();
   const configuration = loadBootstrapEnvironment(process.env);
+
+  if (configuration.googleApplicationCredentials) {
+    process.env.GOOGLE_APPLICATION_CREDENTIALS = configuration.googleApplicationCredentials;
+  }
+
   const artifactRouteSigningSecret = resolveArtifactRouteSigningSecret(process.env, configuration.nodeEnv);
 
+  const fixtureNormalizeStage = createOpenAINormalizeStageHandler({
+    client: createFixtureOpenAIClient(),
+    model: "gpt-5.4-mini",
+  });
+
+  const fixtureImageStage = createGeminiImageStageHandler({
+    client: createFixtureGeminiClient(),
+    model: "gemini-2.5-flash-image",
+    approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+  });
+
+  const fixtureVideoStage = createVeoVideoStageHandler({
+    client: createFixtureVeoClient(),
+    model: "veo-3.1-generate-preview",
+    clock: {
+      now: () => Date.now(),
+      sleep: async () => {},
+    },
+  });
+
+  const liveNormalizeStage = createOpenAINormalizeStageHandler({
+    client: createOpenAIResponsesSdkClient({
+      apiKey: configuration.openaiApiKey ?? "",
+    }),
+    model: "gpt-5.4-mini",
+  });
+
+  const liveImageStage = createGeminiImageStageHandler({
+    client: createVertexGeminiFlashImageClient({
+      project: configuration.vertexProject ?? "",
+      location: configuration.vertexLocation ?? "",
+      apiVersion: configuration.vertexApiVersion,
+      outputRootDir: configuration.artifactsDir,
+    }),
+    model: "gemini-2.5-flash-image",
+    approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+  });
+
+  const liveVideoStage = createVeoVideoStageHandler({
+    client: createVertexVeoVideoClient({
+      project: configuration.vertexProject ?? "",
+      location: configuration.vertexLocation ?? "",
+      apiVersion: configuration.vertexApiVersion,
+      outputRootDir: configuration.artifactsDir,
+    }),
+    model: "veo-3.1-generate-preview",
+  });
+
   const handlers = createStageHandlers({
-    normalize: createOpenAINormalizeStageHandler({
-      client: createFixtureOpenAIClient(),
-      model: "gpt-5.4-mini",
-    }),
+    normalize: composeProviderStageHandler(
+      configuration.providerMode,
+      fixtureNormalizeStage,
+      liveNormalizeStage,
+    ),
     validatePolicy: createRuntimeValidatePolicyStageHandler(),
-    imageGeneration: createGeminiImageStageHandler({
-      client: createFixtureGeminiClient(),
-      model: "gemini-2.5-flash-image",
-      approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
-    }),
-    videoGeneration: createVeoVideoStageHandler({
-      client: createFixtureVeoClient(),
-      model: "veo-3.1-generate-preview",
-      clock: {
-        now: () => Date.now(),
-        sleep: async () => {},
-      },
-    }),
+    imageGeneration: composeProviderStageHandler(
+      configuration.providerMode,
+      fixtureImageStage,
+      liveImageStage,
+    ),
+    videoGeneration: composeProviderStageHandler(
+      configuration.providerMode,
+      fixtureVideoStage,
+      liveVideoStage,
+    ),
     subtitlesExport: createSubtitlesExportStageHandler({
       artifactsRootDir: configuration.artifactsDir,
       fixtureMode: configuration.nodeEnv !== "production",

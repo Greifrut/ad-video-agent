@@ -1,4 +1,6 @@
 import path from "node:path";
+import fs from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
 import { APPROVED_ASSET_BY_ID, APPROVED_ASSET_MANIFEST } from "./approved-assets";
 import { validateAssetRecordIntegrity } from "./asset-integrity";
 import { parseNormalizedBrief, type NormalizedBrief, type NormalizedScene } from "./brief-schema";
@@ -121,6 +123,172 @@ export type GeminiSceneStillResponse = {
 
 export interface GeminiFlashImageClient {
   generateSceneStill: (request: GeminiSceneStillRequest) => Promise<GeminiSceneStillResponse>;
+}
+
+type GoogleGenAIClient = {
+  models: {
+    generateImages: (request: unknown) => Promise<unknown>;
+  };
+};
+
+type GoogleGenAIModule = {
+  GoogleGenAI: new (options: {
+    vertexai: true;
+    project: string;
+    location: string;
+    apiVersion?: string;
+  }) => GoogleGenAIClient;
+};
+
+const loadGoogleGenAIModule = new Function("return import('@google/genai')") as () => Promise<GoogleGenAIModule>;
+
+export type VertexGeminiFlashImageClientOptions = {
+  project: string;
+  location: string;
+  outputRootDir: string;
+  apiVersion?: string;
+  createClient?: () => Promise<GoogleGenAIClient> | GoogleGenAIClient;
+  now?: () => number;
+};
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function parseImageGenerationResponse(payload: unknown): {
+  imageBytes: string;
+  mimeType: string;
+  providerRef: string | null;
+  width: number | null;
+  height: number | null;
+} {
+  if (!isRecord(payload)) {
+    throw new Error("vertex image generation returned an invalid payload");
+  }
+
+  const providerRef = readString(payload.responseId) ?? readString(payload.response_id) ?? null;
+  const generatedImages = payload.generatedImages;
+  if (!Array.isArray(generatedImages) || generatedImages.length === 0) {
+    throw new Error("vertex image generation returned no generatedImages");
+  }
+
+  const firstImage = generatedImages[0];
+  if (!isRecord(firstImage) || !isRecord(firstImage.image)) {
+    throw new Error("vertex image generation returned malformed image payload");
+  }
+
+  const imageBytes = readString(firstImage.image.imageBytes) ?? readString(firstImage.image.image_bytes);
+  if (!imageBytes) {
+    throw new Error("vertex image generation returned no image bytes");
+  }
+
+  return {
+    imageBytes,
+    mimeType:
+      readString(firstImage.image.mimeType) ??
+      readString(firstImage.image.mime_type) ??
+      "image/png",
+    providerRef,
+    width: readNumber(firstImage.image.width),
+    height: readNumber(firstImage.image.height),
+  };
+}
+
+function renderScenePrompt(request: GeminiSceneStillRequest): string {
+  const sourceAssetsSummary = request.sourceAssets
+    .map((asset) => {
+      return `${asset.assetId} (${asset.width}x${asset.height}, ${asset.canonicalMime})`;
+    })
+    .join(", ");
+
+  return [
+    request.prompt.template,
+    "",
+    `Scene ID: ${request.scene.sceneId}`,
+    `Scene type: ${request.scene.sceneType}`,
+    `Narrative: ${request.scene.narrative}`,
+    `Requested transform: ${request.scene.requestedTransform}`,
+    `Approved source assets: ${sourceAssetsSummary}`,
+  ].join("\n");
+}
+
+export function createVertexGeminiFlashImageClient(
+  options: VertexGeminiFlashImageClientOptions,
+): GeminiFlashImageClient {
+  let clientPromise: Promise<GoogleGenAIClient> | null = null;
+  const now = options.now ?? (() => Date.now());
+
+  async function getClient(): Promise<GoogleGenAIClient> {
+    if (!clientPromise) {
+      clientPromise = (async () => {
+        if (options.createClient) {
+          return await options.createClient();
+        }
+
+        const genAiSdk = await loadGoogleGenAIModule();
+        return new genAiSdk.GoogleGenAI({
+          vertexai: true,
+          project: options.project,
+          location: options.location,
+          apiVersion: options.apiVersion ?? "v1",
+        });
+      })();
+    }
+
+    return await clientPromise;
+  }
+
+  return {
+    generateSceneStill: async (request) => {
+      try {
+        const client = await getClient();
+        const response = await client.models.generateImages({
+          model: request.model,
+          prompt: renderScenePrompt(request),
+          config: {
+            numberOfImages: 1,
+            aspectRatio: "16:9",
+          },
+        });
+
+        const parsed = parseImageGenerationResponse(response);
+        const stillBytes = Buffer.from(parsed.imageBytes, "base64");
+        const stillSha = createHash("sha256").update(stillBytes).digest("hex");
+        const extension = parsed.mimeType === "image/jpeg" ? "jpg" : "png";
+        const stillDir = path.join(options.outputRootDir, "runs", request.runId, "stills");
+        const stillFilename = `${request.scene.sceneId}-${randomUUID()}.${extension}`;
+        const stillPath = path.join(stillDir, stillFilename);
+
+        await fs.mkdir(stillDir, { recursive: true });
+        await fs.writeFile(stillPath, stillBytes);
+
+        const fallbackWidth = request.sourceAssets[0]?.width ?? 1280;
+        const fallbackHeight = request.sourceAssets[0]?.height ?? 720;
+
+        return {
+          provider_job_reference:
+            parsed.providerRef ??
+            `vertex-gemini-${request.scene.sceneId}-${now()}`,
+          still: {
+            still_id: `${request.scene.sceneId}-${stillSha.slice(0, 12)}`,
+            storage_path: stillPath,
+            canonical_mime: parsed.mimeType,
+            byte_size: stillBytes.byteLength,
+            width: parsed.width ?? fallbackWidth,
+            height: parsed.height ?? fallbackHeight,
+            sha256: stillSha,
+          },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "unknown vertex image adapter error";
+        throw new Error(`vertex gemini generateSceneStill failed: ${message}`);
+      }
+    },
+  };
 }
 
 export type GeminiImageGeneratorOptions = {

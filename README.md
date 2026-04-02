@@ -60,7 +60,7 @@ The package is architected around these AI tools and prompt contracts:
 - Vertex AI Veo 3.1 for image-to-video scene animation.
 - `ffmpeg` and `ffprobe` for export assembly, subtitle burn-in, and media probing.
 
-The current reviewer-safe runtime defaults to fixture mode and deterministic worker-safe outputs instead of depending on live provider success. The prompt registry, shared contracts, provenance format, and stage adapters still document the intended live-provider architecture so the engineering intent is visible without making reviewers depend on external credentials.
+The runtime supports both deterministic fixture mode and live provider mode. Fixture mode remains the default reviewer-safe path, while live mode wires real OpenAI Responses API + Vertex AI Gemini/Veo adapters behind explicit server-only environment configuration.
 
 ## How AI accelerated the work
 
@@ -96,6 +96,12 @@ All runtime variables in this project are server-only. Do not expose them as `NE
 | `WORKER_CONCURRENCY` | yes | yes | Must stay `1`. Any other value fails validation. |
 | `REQUIRE_FFMPEG` | yes | yes | `false` is acceptable locally, `true` in production. |
 | `ARTIFACT_ROUTE_SIGNING_SECRET` | required in deployment, recommended locally | yes | Used to sign final MP4 and provenance routes. Set a strong random secret in any public deployment. |
+| `AI_PROVIDER_MODE` | yes | yes | `fixture` (default deterministic path) or `live` (real provider path). |
+| `OPENAI_API_KEY` | required when `AI_PROVIDER_MODE=live` | yes | Server-side OpenAI key for Responses API calls in normalize stage. |
+| `VERTEX_PROJECT` | required when `AI_PROVIDER_MODE=live` | yes | GCP project ID for Vertex AI Gemini/Veo calls. |
+| `VERTEX_LOCATION` | required when `AI_PROVIDER_MODE=live` | yes | Vertex region (for example `us-central1`). |
+| `VERTEX_API_VERSION` | optional | yes | Vertex API version for `@google/genai` (defaults to `v1`). |
+| `GOOGLE_APPLICATION_CREDENTIALS` | optional | yes | Absolute path to a service-account JSON key file. If omitted, runtime uses ADC. |
 | `PORT` | optional | yes | Used by the web process. Defaults to platform behavior, `3000` inside the container. |
 
 There are currently no required client-side environment variables.
@@ -162,6 +168,26 @@ Fixture mode is the safest review path and is the default state in the public UI
 
 This path exercises the same public routes, the same SQLite-backed run engine, the same UI states, and the same export route shape without making the reviewer depend on live provider access.
 
+## Live provider mode (OpenAI + Vertex AI)
+
+Set `AI_PROVIDER_MODE=live` and provide the server-only provider credentials/configuration:
+
+```bash
+AI_PROVIDER_MODE=live
+OPENAI_API_KEY=replace-with-openai-key
+VERTEX_PROJECT=your-gcp-project-id
+VERTEX_LOCATION=us-central1
+VERTEX_API_VERSION=v1
+```
+
+If you are not using ADC from attached runtime identity, set:
+
+```bash
+GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
+```
+
+The `fixtureMode` request field remains supported. In live runtime mode, runs with `fixtureMode: true` continue to use deterministic fixture providers.
+
 ## Deployment
 
 ### Target shape
@@ -187,6 +213,12 @@ ARTIFACTS_DIR=/data/artifacts
 WORKER_CONCURRENCY=1
 REQUIRE_FFMPEG=true
 ARTIFACT_ROUTE_SIGNING_SECRET=replace-with-a-strong-random-secret
+AI_PROVIDER_MODE=live
+OPENAI_API_KEY=replace-with-openai-key
+VERTEX_PROJECT=your-gcp-project-id
+VERTEX_LOCATION=us-central1
+VERTEX_API_VERSION=v1
+GOOGLE_APPLICATION_CREDENTIALS=/absolute/path/to/service-account.json
 PORT=3000
 ```
 
@@ -235,7 +267,6 @@ Use `pnpm run-engine:check` before deployment and as part of runtime debugging.
 
 ## Future improvements
 
-- Wire the runtime worker to real OpenAI and Vertex provider clients behind explicit production env validation.
 - Move rate limiting from in-memory state to a process-safe shared mechanism if the service ever grows beyond one container.
 - Add artifact retention policies and cleanup jobs for long-lived environments.
 - Add auth and reviewer session controls if the demo becomes semi-public or persistent.

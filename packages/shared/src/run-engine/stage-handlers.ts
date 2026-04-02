@@ -155,7 +155,16 @@ export function createGeminiImageStageHandler(options: GeminiImageStageOptions):
   });
 
   return async (context) => {
-    const result = await generator.generate(context.payload, context.runId);
+    let result: Awaited<ReturnType<typeof generator.generate>>;
+    try {
+      result = await generator.generate(context.payload, context.runId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "gemini image generation failed";
+      return {
+        type: "fatal_error",
+        reason: message,
+      };
+    }
 
     if (result.outcome === "ok") {
       return {

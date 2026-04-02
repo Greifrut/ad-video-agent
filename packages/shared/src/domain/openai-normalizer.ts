@@ -40,6 +40,113 @@ export interface OpenAIResponsesClient {
   createResponse: (request: OpenAIResponsesRequest) => Promise<OpenAIResponsesResult>;
 }
 
+type OpenAIResponsesRuntimeClient = {
+  responses: {
+    create: (request: unknown) => Promise<unknown>;
+  };
+};
+
+type OpenAIResponsesRuntimeClientConstructor = new (options: {
+  apiKey: string;
+  timeout?: number;
+  maxRetries?: number;
+  organization?: string;
+  project?: string;
+}) => OpenAIResponsesRuntimeClient;
+
+type OpenAIModule = {
+  default: OpenAIResponsesRuntimeClientConstructor;
+};
+
+const loadOpenAIModule = new Function("return import('openai')") as () => Promise<OpenAIModule>;
+
+export type OpenAIResponsesSdkClientOptions = {
+  apiKey: string;
+  timeoutMs?: number;
+  maxRetries?: number;
+  organization?: string;
+  project?: string;
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readStringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
+}
+
+function parseOpenAIResponsesResult(payload: unknown): OpenAIResponsesResult {
+  if (!isRecord(payload)) {
+    return {};
+  }
+
+  const id = readStringField(payload, "id") ?? readStringField(payload, "_request_id");
+  const outputText = readStringField(payload, "output_text");
+  const outputValue = payload.output;
+  const output = Array.isArray(outputValue)
+    ? outputValue
+        .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+        .map((entry) => {
+          const contentValue = entry.content;
+          const content = Array.isArray(contentValue)
+            ? contentValue
+                .filter((part): part is Record<string, unknown> => isRecord(part))
+                .map((part) => {
+                  return {
+                    type: readStringField(part, "type"),
+                    text: readStringField(part, "text"),
+                  };
+                })
+            : [];
+
+          return { content };
+        })
+    : undefined;
+
+  return {
+    id,
+    output_text: outputText,
+    output,
+  };
+}
+
+export function createOpenAIResponsesSdkClient(
+  options: OpenAIResponsesSdkClientOptions,
+): OpenAIResponsesClient {
+  let clientPromise: Promise<OpenAIResponsesRuntimeClient> | null = null;
+
+  async function getClient(): Promise<OpenAIResponsesRuntimeClient> {
+    if (!clientPromise) {
+      clientPromise = (async () => {
+        const openaiSdk = await loadOpenAIModule();
+        return new openaiSdk.default({
+          apiKey: options.apiKey,
+          timeout: options.timeoutMs,
+          maxRetries: options.maxRetries,
+          organization: options.organization,
+          project: options.project,
+        });
+      })();
+    }
+
+    return await clientPromise;
+  }
+
+  return {
+    createResponse: async (request) => {
+      const client = await getClient();
+      const response = await client.responses.create({
+        model: request.model,
+        input: request.input,
+      });
+
+      return parseOpenAIResponsesResult(response);
+    },
+  };
+}
+
 export type PromptMetadata = {
   prompt_id: PromptRegistryEntry["prompt_id"];
   version: PromptRegistryEntry["version"];

@@ -382,4 +382,29 @@ describe("gemini-image", () => {
     expect(integrityResult.reason).toContain("approved_asset_missing_on_disk");
     expect(fake.requests).toHaveLength(0);
   });
+
+  test("surfaces provider adapter exceptions as fatal stage errors", async () => {
+    const stage = createGeminiImageStageHandler({
+      client: {
+        generateSceneStill: async () => {
+          throw new Error("vertex image adapter decode failure");
+        },
+      },
+      approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+    });
+
+    const result = await stage({
+      runId: "run-gemini-provider-fail",
+      stage: "image_generation",
+      attemptCount: 1,
+      payload: createPayloadWithApprovedAssets(),
+    });
+
+    expect(result.type).toBe("fatal_error");
+    if (result.type !== "fatal_error") {
+      return;
+    }
+
+    expect(result.reason).toContain("vertex image adapter decode failure");
+  });
 });

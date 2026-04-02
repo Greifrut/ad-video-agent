@@ -1,3 +1,6 @@
+import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
+import path from "node:path";
 import { parseNormalizedBrief } from "./brief-schema";
 import type { FailureReasonCode } from "./contracts";
 import {
@@ -10,6 +13,26 @@ const DEFAULT_MODEL = "veo-3.1-generate-preview";
 const POLLING_SCHEDULE_MS = [10_000, 20_000, 30_000] as const;
 const MAX_POLL_INTERVAL_MS = 30_000;
 const MAX_SCENE_WALL_CLOCK_MS = 15 * 60 * 1_000;
+
+type GoogleGenAIVideoClient = {
+  models: {
+    generateVideos: (request: unknown) => Promise<unknown>;
+  };
+  operations: {
+    getVideosOperation: (request: unknown) => Promise<unknown>;
+  };
+};
+
+type GoogleGenAIModule = {
+  GoogleGenAI: new (options: {
+    vertexai: true;
+    project: string;
+    location: string;
+    apiVersion?: string;
+  }) => GoogleGenAIVideoClient;
+};
+
+const loadGoogleGenAIModule = new Function("return import('@google/genai')") as () => Promise<GoogleGenAIModule>;
 
 type PollingClock = {
   now: () => number;
@@ -157,6 +180,269 @@ export interface VeoVideoClient {
   getSceneVideoGenerationStatus: (
     request: VeoSceneVideoStatusRequest,
   ) => Promise<VeoSceneVideoStatusResponse>;
+}
+
+export type VertexVeoVideoClientOptions = {
+  project: string;
+  location: string;
+  apiVersion?: string;
+  outputRootDir: string;
+  createClient?: () => Promise<GoogleGenAIVideoClient> | GoogleGenAIVideoClient;
+  fetchBinary?: (url: string) => Promise<Buffer>;
+};
+
+function readString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
+
+function readNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function isLocalFilePath(candidate: string): boolean {
+  return !candidate.includes("://");
+}
+
+function renderScenePrompt(request: VeoSceneVideoStartRequest): string {
+  return [
+    request.prompt.template,
+    "",
+    `Scene ID: ${request.scene.sceneId}`,
+    `Scene type: ${request.scene.sceneType}`,
+    `Narrative: ${request.scene.narrative}`,
+    `Duration seconds: ${request.scene.durationSeconds}`,
+    `First frame still ID: ${request.firstFrame.stillId}`,
+    `First frame SHA256: ${request.firstFrame.sha256}`,
+    `Source asset IDs: ${request.sourceAssetIds.join(",")}`,
+  ].join("\n");
+}
+
+function readOperationName(payload: unknown): string | null {
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  return readString(payload.name);
+}
+
+async function defaultFetchBinary(url: string): Promise<Buffer> {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`download failed (${response.status})`);
+  }
+
+  const arrayBuffer = await response.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+function readVideoBytes(video: Record<string, unknown>): Buffer | null {
+  const encodedBytes =
+    readString(video.videoBytes) ??
+    readString(video.video_bytes) ??
+    readString(video.bytes) ??
+    readString(video.inlineBytes) ??
+    readString(video.inline_bytes);
+
+  if (!encodedBytes) {
+    return null;
+  }
+
+  return Buffer.from(encodedBytes, "base64");
+}
+
+function clipCachePath(outputRootDir: string, providerJobReference: string): string {
+  const providerHash = createHash("sha256").update(providerJobReference).digest("hex");
+  return path.join(outputRootDir, "provider-cache", "veo", `${providerHash}.mp4`);
+}
+
+async function parseOperationStatus(
+  payload: unknown,
+  providerJobReference: string,
+  outputRootDir: string,
+  fetchBinary: (url: string) => Promise<Buffer>,
+): Promise<VeoSceneVideoStatusResponse> {
+  if (!isRecord(payload)) {
+    throw new Error("vertex veo operation payload is invalid");
+  }
+
+  const done = payload.done === true;
+  if (!done) {
+    return {
+      status: "in_progress",
+    };
+  }
+
+  if (isRecord(payload.error)) {
+    const message = readString(payload.error.message) ?? "vertex veo operation failed";
+    return {
+      status: "failed",
+      reason: message,
+      reasonCode: readString(payload.error.code) ?? undefined,
+      retryable: false,
+    };
+  }
+
+  const response = payload.response;
+  if (!isRecord(response) || !Array.isArray(response.generatedVideos) || response.generatedVideos.length === 0) {
+    return {
+      status: "failed",
+      reason: "vertex veo operation completed without generated videos",
+      retryable: false,
+    };
+  }
+
+  const firstGeneratedVideo = response.generatedVideos[0];
+  if (!isRecord(firstGeneratedVideo) || !isRecord(firstGeneratedVideo.video)) {
+    return {
+      status: "failed",
+      reason: "vertex veo operation video payload was malformed",
+      retryable: false,
+    };
+  }
+
+  const videoUri = readString(firstGeneratedVideo.video.uri) ?? readString(firstGeneratedVideo.video.gcsUri);
+  if (!videoUri) {
+    const embeddedBytes = readVideoBytes(firstGeneratedVideo.video);
+    if (!embeddedBytes) {
+      return {
+        status: "failed",
+        reason: "vertex veo operation did not provide downloadable video content",
+        retryable: false,
+      };
+    }
+
+    const localPath = clipCachePath(outputRootDir, providerJobReference);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, embeddedBytes);
+    const sha256 = createHash("sha256").update(embeddedBytes).digest("hex");
+
+    return {
+      status: "succeeded",
+      clip: {
+        clip_id: path.basename(localPath, ".mp4"),
+        storage_path: localPath,
+        canonical_mime: "video/mp4",
+        byte_size: embeddedBytes.byteLength,
+        duration_seconds: readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5,
+        fps: readNumber(firstGeneratedVideo.video.fps) ?? 24,
+        width: readNumber(firstGeneratedVideo.video.width) ?? 1280,
+        height: readNumber(firstGeneratedVideo.video.height) ?? 720,
+        sha256,
+      },
+    };
+  }
+
+  if (!/^https?:\/\//i.test(videoUri)) {
+    return {
+      status: "failed",
+      reason: `vertex veo returned unsupported video URI scheme: ${videoUri}`,
+      retryable: false,
+    };
+  }
+
+  const localPath = clipCachePath(outputRootDir, providerJobReference);
+  let videoBytes: Buffer;
+  try {
+    videoBytes = await fs.readFile(localPath);
+  } catch {
+    videoBytes = await fetchBinary(videoUri);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, videoBytes);
+  }
+
+  const durationSeconds = readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5;
+  const width = readNumber(firstGeneratedVideo.video.width) ?? 1280;
+  const height = readNumber(firstGeneratedVideo.video.height) ?? 720;
+  const fps = readNumber(firstGeneratedVideo.video.fps) ?? 24;
+  const sha256 = createHash("sha256").update(videoBytes).digest("hex");
+  const clipId = path.basename(localPath, ".mp4");
+
+  return {
+    status: "succeeded",
+    clip: {
+      clip_id: clipId,
+      storage_path: localPath,
+      canonical_mime: "video/mp4",
+      byte_size: videoBytes.byteLength,
+      duration_seconds: durationSeconds,
+      fps,
+      width,
+      height,
+      sha256,
+    },
+  };
+}
+
+export function createVertexVeoVideoClient(options: VertexVeoVideoClientOptions): VeoVideoClient {
+  let clientPromise: Promise<GoogleGenAIVideoClient> | null = null;
+  const fetchBinary = options.fetchBinary ?? defaultFetchBinary;
+
+  async function getClient(): Promise<GoogleGenAIVideoClient> {
+    if (!clientPromise) {
+      clientPromise = (async () => {
+        if (options.createClient) {
+          return await options.createClient();
+        }
+
+        const genAiSdk = await loadGoogleGenAIModule();
+        return new genAiSdk.GoogleGenAI({
+          vertexai: true,
+          project: options.project,
+          location: options.location,
+          apiVersion: options.apiVersion ?? "v1",
+        });
+      })();
+    }
+
+    return await clientPromise;
+  }
+
+  return {
+    startSceneVideoGeneration: async (request) => {
+      const client = await getClient();
+      const generateRequest: Record<string, unknown> = {
+        model: request.model,
+        prompt: renderScenePrompt(request),
+        config: {
+          numberOfVideos: 1,
+          durationSeconds: Math.max(1, Math.min(20, Math.round(request.scene.durationSeconds))),
+        },
+      };
+
+      if (isLocalFilePath(request.firstFrame.storagePath)) {
+        const firstFrameBytes = await fs.readFile(request.firstFrame.storagePath);
+        generateRequest.image = {
+          imageBytes: firstFrameBytes.toString("base64"),
+          mimeType: request.firstFrame.canonicalMime,
+        };
+      }
+
+      const operation = await client.models.generateVideos(generateRequest);
+      const operationName = readOperationName(operation);
+      if (!operationName) {
+        throw new Error("vertex veo start did not return operation name");
+      }
+
+      return {
+        provider_job_reference: operationName,
+      };
+    },
+    getSceneVideoGenerationStatus: async (request) => {
+      const client = await getClient();
+      const operation = await client.operations.getVideosOperation({
+        operation: {
+          name: request.providerJobReference,
+        },
+      });
+
+      return await parseOperationStatus(
+        operation,
+        request.providerJobReference,
+        options.outputRootDir,
+        fetchBinary,
+      );
+    },
+  };
 }
 
 export type VeoVideoGeneratorOptions = {
