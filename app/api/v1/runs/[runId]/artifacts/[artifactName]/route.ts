@@ -1,6 +1,11 @@
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { loadBootstrapEnvironment } from "@shared/index";
+import {
+  computeArtifactRouteSignature,
+  loadBootstrapEnvironment,
+  resolveArtifactRouteSigningSecret,
+} from "@shared/index";
 import { getRunEngine } from "@/app/api/_server/run-engine-instance";
 import { jsonError } from "@/app/api/_server/http";
 
@@ -66,21 +71,35 @@ function readSignedRouteMetadata(result: Record<string, unknown> | null, artifac
   };
 }
 
-function isSignedRequestValid(requestUrl: URL, signedRoute: SignedRouteMetadata): { ok: true } | { ok: false; code: "invalid_signature" | "signature_expired" } {
+function isSignedRequestValid(
+  requestUrl: URL,
+  signedRoute: SignedRouteMetadata,
+  runId: string,
+  artifactName: string,
+  signingSecret: string,
+): { ok: true } | { ok: false; code: "invalid_signature" | "signature_expired" } {
   const expires = requestUrl.searchParams.get("expires");
   const signature = requestUrl.searchParams.get("signature");
   if (!expires || !signature) {
     return { ok: false, code: "invalid_signature" };
   }
 
-  const signedUrl = new URL(signedRoute.signed_path, "http://signed.local");
-  const signedExpires = signedUrl.searchParams.get("expires");
-  const signedSignature = signedUrl.searchParams.get("signature");
-  if (!signedExpires || !signedSignature) {
+  const expectedSignature = computeArtifactRouteSignature({
+    runId,
+    artifactName,
+    expiresAtIso: expires,
+    signingSecret,
+  });
+
+  const provided = Buffer.from(signature, "utf8");
+  const expected = Buffer.from(expectedSignature, "utf8");
+  if (provided.length !== expected.length || !crypto.timingSafeEqual(provided, expected)) {
     return { ok: false, code: "invalid_signature" };
   }
 
-  if (expires !== signedExpires || signature !== signedSignature) {
+  const signedUrl = new URL(signedRoute.signed_path, "http://signed.local");
+  const signedExpires = signedUrl.searchParams.get("expires");
+  if (!signedExpires || signedExpires !== expires || signedRoute.expires_at !== expires) {
     return { ok: false, code: "invalid_signature" };
   }
 
@@ -111,7 +130,16 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       return jsonError(404, "not_found", "Signed artifact route metadata not found.");
     }
 
-    const signatureCheck = isSignedRequestValid(new URL(request.url), signedRoute);
+    const bootstrap = loadBootstrapEnvironment(process.env);
+    const signingSecret = resolveArtifactRouteSigningSecret(process.env, bootstrap.nodeEnv);
+
+    const signatureCheck = isSignedRequestValid(
+      new URL(request.url),
+      signedRoute,
+      runId,
+      artifactName,
+      signingSecret,
+    );
     if (!signatureCheck.ok) {
       if (signatureCheck.code === "signature_expired") {
         return jsonError(410, "signature_expired", "Signed artifact link has expired.");
@@ -120,7 +148,6 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
       return jsonError(403, "invalid_signature", "Signed artifact link is invalid.");
     }
 
-    const bootstrap = loadBootstrapEnvironment(process.env);
     const artifactPath = path.join(bootstrap.artifactsDir, "runs", runId, artifactName);
     const fileBuffer = await fs.readFile(artifactPath);
 

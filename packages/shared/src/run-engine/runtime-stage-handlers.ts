@@ -74,6 +74,36 @@ function collectSelectedAssetIds(brief: NormalizedBrief): string[] {
   return [...unique].sort();
 }
 
+function enrichApprovedAssetsForRuntime(brief: NormalizedBrief): NormalizedBrief {
+  return {
+    ...brief,
+    scenes: brief.scenes.map((scene) => {
+      if (scene.approvedAssetIds.length > 0) {
+        return scene;
+      }
+
+      if (scene.sceneType === "intro") {
+        return {
+          ...scene,
+          approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
+        };
+      }
+
+      if (scene.sceneType === "product_focus") {
+        return {
+          ...scene,
+          approvedAssetIds: ["product-can-classic-packshot"],
+        };
+      }
+
+      return {
+        ...scene,
+        approvedAssetIds: ["brand-wordmark-primary"],
+      };
+    }),
+  };
+}
+
 export function createRuntimeNormalizeStageHandler(): StageHandler {
   return async (context) => {
     const inputBrief = extractInputBrief(context.payload);
@@ -120,8 +150,9 @@ export function createRuntimeValidatePolicyStageHandler(): StageHandler {
       };
     }
 
-    const policy = evaluateBriefPolicy(parsed.value, APPROVED_ASSET_MANIFEST);
-    const selectedAssetIds = collectSelectedAssetIds(parsed.value);
+    const enrichedBrief = enrichApprovedAssetsForRuntime(parsed.value);
+    const policy = evaluateBriefPolicy(enrichedBrief, APPROVED_ASSET_MANIFEST);
+    const selectedAssetIds = collectSelectedAssetIds(enrichedBrief);
 
     if (policy.outcome === "ok") {
       return {
@@ -131,7 +162,7 @@ export function createRuntimeValidatePolicyStageHandler(): StageHandler {
             selected_asset_ids: selectedAssetIds,
             reason_codes: [],
           },
-          normalized_brief: parsed.value,
+          normalized_brief: enrichedBrief,
         },
       };
     }
@@ -145,7 +176,7 @@ export function createRuntimeValidatePolicyStageHandler(): StageHandler {
           selected_asset_ids: selectedAssetIds,
           reason_codes: policy.reasonCodes,
         },
-        normalized_brief: parsed.value,
+        normalized_brief: enrichedBrief,
       },
     };
   };

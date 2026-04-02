@@ -1,6 +1,9 @@
 "use client";
 
-import { APPROVED_ASSET_BY_ID, type ApprovedAssetRecord } from "@shared/domain/approved-assets";
+import {
+  APPROVED_ASSET_BY_ID,
+  type ApprovedAssetRecord,
+} from "@shared/domain/approved-assets";
 import type { RunOutcome, RunPhase } from "@shared/domain/contracts";
 import { useEffect, useMemo, useState } from "react";
 
@@ -52,7 +55,12 @@ const PHASE_STEPS: Array<{
   },
 ];
 
-const TERMINAL_OUTCOMES = new Set<RunOutcome>(["ok", "needs_clarification", "policy_blocked", "provider_failed"]);
+const TERMINAL_OUTCOMES = new Set<RunOutcome>([
+  "ok",
+  "needs_clarification",
+  "policy_blocked",
+  "provider_failed",
+]);
 const TERMINAL_PHASES = new Set<RunPhase>(["completed", "failed"]);
 const POLL_INTERVAL_MS = 1250;
 
@@ -136,20 +144,29 @@ function isTerminalStatus(status: RunStatusPayload | null): boolean {
     return false;
   }
 
-  return TERMINAL_PHASES.has(status.phase) || TERMINAL_OUTCOMES.has(status.outcome);
+  return (
+    TERMINAL_PHASES.has(status.phase) || TERMINAL_OUTCOMES.has(status.outcome)
+  );
 }
 
 function humanizeReason(code: string): string {
   const messages: Record<string, string> = {
-    invented_brand_critical_media: "Blocked because the request asks for invented brand-critical media rather than approved assets.",
-    brand_critical_asset_required: "Brand-critical scenes need at least one approved source asset.",
-    brief_no_asset_match: "The brief did not map cleanly to any approved assets, so it needs clarification.",
-    brief_ambiguous_visual_intent: "The brief is too ambiguous for a deterministic demo run.",
+    invented_brand_critical_media:
+      "Blocked because the request asks for invented brand-critical media rather than approved assets.",
+    brand_critical_asset_required:
+      "Brand-critical scenes need at least one approved source asset.",
+    brief_no_asset_match:
+      "The brief did not map cleanly to any approved assets, so it needs clarification.",
+    brief_ambiguous_visual_intent:
+      "The brief is too ambiguous for a deterministic demo run.",
     provider_failed: "A provider step failed before the export could complete.",
     policy_blocked: "The request was blocked by the asset policy checks.",
-    needs_clarification: "The request needs a more specific brief before it can continue.",
-    rate_limited: "Too many requests were sent too quickly. Wait a moment and try again.",
-    internal_error: "The demo backend hit an unexpected error while processing the run.",
+    needs_clarification:
+      "The request needs a more specific brief before it can continue.",
+    rate_limited:
+      "Too many requests were sent too quickly. Wait a moment and try again.",
+    internal_error:
+      "The demo backend hit an unexpected error while processing the run.",
     invalid_request: "The request payload did not match the expected shape.",
     not_found: "The requested run could not be found.",
   };
@@ -166,16 +183,23 @@ function describeStatus(status: RunStatusPayload | null): string {
     return "Completed successfully — final playback and provenance are ready below.";
   }
 
-  if (status.outcome === "policy_blocked" || status.outcome === "needs_clarification" || status.outcome === "provider_failed") {
+  if (
+    status.outcome === "policy_blocked" ||
+    status.outcome === "needs_clarification" ||
+    status.outcome === "provider_failed"
+  ) {
     return humanizeReason(status.errorCode ?? status.outcome);
   }
 
   const descriptions: Record<RunPhase, string> = {
     submitted: "Run accepted. Waiting for the first worker step.",
     normalizing: "Turning the plain-language brief into the normalized schema.",
-    policy_validating: "Checking the brief against approved-asset and policy rules.",
-    generating_images: "Preparing asset-derived stills for the final motion sequence.",
-    generating_video: "Generating scene video from approved asset-derived inputs.",
+    policy_validating:
+      "Checking the brief against approved-asset and policy rules.",
+    generating_images:
+      "Preparing asset-derived stills for the final motion sequence.",
+    generating_video:
+      "Generating scene video from approved asset-derived inputs.",
     exporting: "Packaging subtitles, provenance, and the final MP4 artifact.",
     completed: "Run completed and artifacts are available.",
     failed: "Run failed before completion.",
@@ -204,7 +228,9 @@ function asStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string");
 }
 
-function statusTone(status: RunStatusPayload | null): "neutral" | "active" | "success" | "warning" | "danger" {
+function statusTone(
+  status: RunStatusPayload | null,
+): "neutral" | "active" | "success" | "warning" | "danger" {
   if (!status) {
     return "neutral";
   }
@@ -213,7 +239,10 @@ function statusTone(status: RunStatusPayload | null): "neutral" | "active" | "su
     return "success";
   }
 
-  if (status.outcome === "policy_blocked" || status.outcome === "provider_failed") {
+  if (
+    status.outcome === "policy_blocked" ||
+    status.outcome === "provider_failed"
+  ) {
     return "danger";
   }
 
@@ -258,7 +287,10 @@ export function PublicDemoPage() {
   }, [runStatus?.selectedAssetIds]);
 
   const normalizedJson = useMemo(() => {
-    return formatJson(runStatus?.normalizedBrief, "Normalized brief JSON will appear here once the normalize step succeeds.");
+    return formatJson(
+      runStatus?.normalizedBrief,
+      "Normalized brief JSON will appear here once the normalize step succeeds.",
+    );
   }, [runStatus?.normalizedBrief]);
 
   useEffect(() => {
@@ -275,7 +307,9 @@ export function PublicDemoPage() {
           method: "GET",
           cache: "no-store",
         });
-        const payload = (await response.json()) as RunStatusPayload | ApiErrorResponse;
+        const payload = (await response.json()) as
+          | RunStatusPayload
+          | ApiErrorResponse;
 
         if (!response.ok) {
           const error = readApiError(payload);
@@ -299,7 +333,9 @@ export function PublicDemoPage() {
           return;
         }
 
-        setRequestError(error instanceof Error ? error.message : "Failed to load run status.");
+        setRequestError(
+          error instanceof Error ? error.message : "Failed to load run status.",
+        );
         setPollingRunId(null);
       }
     };
@@ -337,7 +373,9 @@ export function PublicDemoPage() {
           method: "GET",
           cache: "no-store",
         });
-        const payload = (await response.json()) as ProvenancePayload | ApiErrorResponse;
+        const payload = (await response.json()) as
+          | ProvenancePayload
+          | ApiErrorResponse;
 
         if (!response.ok) {
           const error = readApiError(payload);
@@ -349,7 +387,11 @@ export function PublicDemoPage() {
         }
       } catch (error) {
         if (!cancelled) {
-          setProvenanceError(error instanceof Error ? error.message : "Failed to load provenance.");
+          setProvenanceError(
+            error instanceof Error
+              ? error.message
+              : "Failed to load provenance.",
+          );
         }
       } finally {
         if (!cancelled) {
@@ -365,12 +407,18 @@ export function PublicDemoPage() {
     };
   }, [provenanceUrl]);
 
-  const currentPhaseIndex = runStatus ? PHASE_STEPS.findIndex((step) => step.phase === runStatus.phase) : -1;
+  const currentPhaseIndex = runStatus
+    ? PHASE_STEPS.findIndex((step) => step.phase === runStatus.phase)
+    : -1;
   const messageTone = statusTone(runStatus);
   const statusMessage = requestError ?? describeStatus(runStatus);
-  const statusErrorMessage = requestError ?? ((runStatus?.outcome === "policy_blocked" || runStatus?.outcome === "needs_clarification" || runStatus?.outcome === "provider_failed")
-    ? humanizeReason(runStatus.errorCode ?? runStatus.outcome)
-    : null);
+  const statusErrorMessage =
+    requestError ??
+    (runStatus?.outcome === "policy_blocked" ||
+    runStatus?.outcome === "needs_clarification" ||
+    runStatus?.outcome === "provider_failed"
+      ? humanizeReason(runStatus.errorCode ?? runStatus.outcome)
+      : null);
 
   const handleGenerate = async () => {
     const trimmedBrief = brief.trim();
@@ -397,7 +445,9 @@ export function PublicDemoPage() {
         }),
       });
 
-      const payload = (await response.json()) as StartRunResponse | ApiErrorResponse;
+      const payload = (await response.json()) as
+        | StartRunResponse
+        | ApiErrorResponse;
       if (!response.ok) {
         const error = readApiError(payload);
         throw new Error(error?.message ?? "Failed to start the run.");
@@ -413,7 +463,9 @@ export function PublicDemoPage() {
     } catch (error) {
       setRunStatus(null);
       setPollingRunId(null);
-      setRequestError(error instanceof Error ? error.message : "Failed to start the run.");
+      setRequestError(
+        error instanceof Error ? error.message : "Failed to start the run.",
+      );
     } finally {
       setIsStarting(false);
     }
@@ -421,8 +473,12 @@ export function PublicDemoPage() {
 
   const provenancePrompts = provenance?.prompt_registry ?? {};
   const sourceAssets = provenance?.source_assets ?? [];
-  const imageProviderRefs = asStringArray(provenance?.provider_ids?.image_generation_job_refs);
-  const videoProviderRefs = asStringArray(provenance?.provider_ids?.video_generation_job_refs);
+  const imageProviderRefs = asStringArray(
+    provenance?.provider_ids?.image_generation_job_refs,
+  );
+  const videoProviderRefs = asStringArray(
+    provenance?.provider_ids?.video_generation_job_refs,
+  );
 
   return (
     <main className="min-h-screen bg-background px-4 py-8 text-foreground sm:px-6 lg:px-8">
@@ -438,17 +494,23 @@ export function PublicDemoPage() {
                   Brief in, approved lineage out, playback ready.
                 </h1>
                 <p className="max-w-2xl text-base leading-7 text-muted-strong sm:text-lg">
-                  This single-page reviewer demo submits a brief, watches the SQLite-backed pipeline progress,
-                  surfaces normalized JSON and approved assets, then shows the signed video and provenance artifacts.
+                  This single-page reviewer demo submits a brief, watches the
+                  SQLite-backed pipeline progress, surfaces normalized JSON and
+                  approved assets, then shows the signed video and provenance
+                  artifacts.
                 </p>
               </div>
             </div>
 
-            <div className={`inline-flex max-w-xl items-start gap-3 rounded-2xl border px-4 py-3 text-sm leading-6 ${toneClasses(messageTone)}`}>
+            <div
+              className={`inline-flex max-w-xl items-start gap-3 rounded-2xl border px-4 py-3 text-sm leading-6 ${toneClasses(messageTone)}`}
+            >
               <span className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-current" />
               <div className="space-y-1">
                 <p className="font-semibold">
-                  {runStatus ? `${runStatus.phase.replaceAll("_", " ")} · ${runStatus.outcome.replaceAll("_", " ")}` : "Ready for a deterministic run"}
+                  {runStatus
+                    ? `${runStatus.phase.replaceAll("_", " ")} · ${runStatus.outcome.replaceAll("_", " ")}`
+                    : "Ready for a deterministic run"}
                 </p>
                 <p>{statusMessage}</p>
               </div>
@@ -461,14 +523,19 @@ export function PublicDemoPage() {
             <div className="panel px-6 py-6 lg:px-8">
               <div className="flex flex-col gap-6">
                 <div className="space-y-2">
-                  <h2 className="text-xl font-semibold tracking-tight">Creative brief</h2>
+                  <h2 className="text-xl font-semibold tracking-tight">
+                    Creative brief
+                  </h2>
                   <p className="text-sm leading-6 text-muted">
-                    Keep fixture mode on for a deterministic reviewer flow that exercises the existing Task 8 routes.
+                    Keep fixture mode on for a deterministic reviewer flow that
+                    exercises the existing Task 8 routes.
                   </p>
                 </div>
 
                 <label className="space-y-3">
-                  <span className="text-sm font-medium text-muted-strong">Brief input</span>
+                  <span className="text-sm font-medium text-muted-strong">
+                    Brief input
+                  </span>
                   <textarea
                     data-testid="brief-input"
                     value={brief}
@@ -550,14 +617,18 @@ export function PublicDemoPage() {
                         Approved assets
                       </h3>
                       <p className="text-sm leading-6 text-muted">
-                        The policy-selected asset IDs for the current run appear here.
+                        The policy-selected asset IDs for the current run appear
+                        here.
                       </p>
                     </div>
 
                     <div className="grid gap-3 sm:grid-cols-2">
                       {selectedAssets.length > 0 ? (
                         selectedAssets.map(({ assetId, asset }) => (
-                          <article key={assetId} className="overflow-hidden rounded-2xl border border-border bg-surface">
+                          <article
+                            key={assetId}
+                            className="overflow-hidden rounded-2xl border border-border bg-surface"
+                          >
                             {asset ? (
                               <img
                                 src={`/assets/approved/${asset.filename}`}
@@ -570,8 +641,13 @@ export function PublicDemoPage() {
                               </div>
                             )}
                             <div className="space-y-2 p-4">
-                              <p className="font-medium text-foreground">{assetId}</p>
-                              <p className="text-sm text-muted">{asset?.filename ?? "Manifest details unavailable."}</p>
+                              <p className="font-medium text-foreground">
+                                {assetId}
+                              </p>
+                              <p className="text-sm text-muted">
+                                {asset?.filename ??
+                                  "Manifest details unavailable."}
+                              </p>
                               {asset ? (
                                 <p className="text-xs uppercase tracking-[0.16em] text-muted">
                                   {asset.tags.join(" · ")}
@@ -582,7 +658,8 @@ export function PublicDemoPage() {
                         ))
                       ) : (
                         <div className="rounded-2xl border border-dashed border-border px-4 py-8 text-sm leading-6 text-muted sm:col-span-2">
-                          Approved asset IDs appear after the policy validation step succeeds.
+                          Approved asset IDs appear after the policy validation
+                          step succeeds.
                         </div>
                       )}
                     </div>
@@ -594,9 +671,12 @@ export function PublicDemoPage() {
             <div className="panel px-6 py-6 lg:px-8">
               <div className="mb-4 flex items-center justify-between gap-3">
                 <div className="space-y-1">
-                  <h2 className="text-xl font-semibold tracking-tight">Final playback</h2>
+                  <h2 className="text-xl font-semibold tracking-tight">
+                    Final playback
+                  </h2>
                   <p className="text-sm leading-6 text-muted">
-                    Signed artifacts are served by the existing Task 8 artifact routes.
+                    Signed artifacts are served by the existing Task 8 artifact
+                    routes.
                   </p>
                 </div>
                 {runStatus?.resultUrl ? (
@@ -621,7 +701,8 @@ export function PublicDemoPage() {
                 />
                 {!runStatus?.resultUrl ? (
                   <div className="flex aspect-video items-center justify-center rounded-2xl border border-dashed border-border bg-background/70 px-6 text-center text-sm leading-6 text-muted">
-                    Final video playback appears here after the export step completes.
+                    Final video playback appears here after the export step
+                    completes.
                   </div>
                 ) : null}
               </div>
@@ -631,17 +712,24 @@ export function PublicDemoPage() {
           <aside className="space-y-6">
             <div className="panel px-6 py-6 lg:px-8">
               <div className="mb-5 space-y-1">
-                <h2 className="text-xl font-semibold tracking-tight">Run progress</h2>
+                <h2 className="text-xl font-semibold tracking-tight">
+                  Run progress
+                </h2>
                 <p className="text-sm leading-6 text-muted">
-                  Each stage becomes visibly complete, active, or stopped as the run advances.
+                  Each stage becomes visibly complete, active, or stopped as the
+                  run advances.
                 </p>
               </div>
 
               <ol data-testid="status-timeline" className="space-y-3">
                 {PHASE_STEPS.map((step, index) => {
-                  const isCompleted = currentPhaseIndex > index || runStatus?.outcome === "ok";
-                  const isCurrent = currentPhaseIndex === index && !isTerminalStatus(runStatus);
-                  const isFailed = runStatus?.phase === "failed" && index === Math.max(currentPhaseIndex, 0);
+                  const isCompleted =
+                    currentPhaseIndex > index || runStatus?.outcome === "ok";
+                  const isCurrent =
+                    currentPhaseIndex === index && !isTerminalStatus(runStatus);
+                  const isFailed =
+                    runStatus?.phase === "failed" &&
+                    index === Math.max(currentPhaseIndex, 0);
 
                   return (
                     <li
@@ -672,7 +760,9 @@ export function PublicDemoPage() {
                         </span>
                         <div className="space-y-1">
                           <div className="flex flex-wrap items-center gap-2">
-                            <p className="font-medium text-foreground">{step.label}</p>
+                            <p className="font-medium text-foreground">
+                              {step.label}
+                            </p>
                             {isCurrent ? (
                               <span className="rounded-full border border-accent/30 bg-accent-soft px-2.5 py-0.5 text-xs font-medium text-accent">
                                 Live
@@ -689,7 +779,9 @@ export function PublicDemoPage() {
                               </span>
                             ) : null}
                           </div>
-                          <p className="text-sm leading-6 text-muted">{step.detail}</p>
+                          <p className="text-sm leading-6 text-muted">
+                            {step.detail}
+                          </p>
                         </div>
                       </div>
                     </li>
@@ -698,17 +790,25 @@ export function PublicDemoPage() {
               </ol>
             </div>
 
-            <div data-testid="provenance-panel" className="panel px-6 py-6 lg:px-8">
+            <div
+              data-testid="provenance-panel"
+              className="panel px-6 py-6 lg:px-8"
+            >
               <div className="mb-5 space-y-1">
-                <h2 className="text-xl font-semibold tracking-tight">Provenance</h2>
+                <h2 className="text-xl font-semibold tracking-tight">
+                  Provenance
+                </h2>
                 <p className="text-sm leading-6 text-muted">
-                  Source asset IDs, prompt metadata, and provider references stay visible for reviewer trust.
+                  Source asset IDs, prompt metadata, and provider references
+                  stay visible for reviewer trust.
                 </p>
               </div>
 
               <div className="space-y-4 text-sm leading-6">
                 <div className="rounded-3xl border border-border bg-surface-elevated p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Source asset IDs</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                    Source asset IDs
+                  </p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {sourceAssets.length > 0 ? (
                       sourceAssets.map((assetId) => (
@@ -730,60 +830,94 @@ export function PublicDemoPage() {
                 </div>
 
                 <div className="rounded-3xl border border-border bg-surface-elevated p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Prompt + model registry</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                    Prompt + model registry
+                  </p>
                   <div className="mt-3 space-y-3">
                     {Object.entries(provenancePrompts).length > 0 ? (
-                      Object.entries(provenancePrompts).map(([stageName, entry]) => (
-                        <div key={stageName} className="rounded-2xl border border-border bg-surface px-4 py-3">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <p className="font-medium capitalize text-foreground">{stageName.replaceAll("_", " ")}</p>
-                            {entry?.model ? (
-                              <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-strong">
-                                {entry.model}
-                              </span>
-                            ) : null}
+                      Object.entries(provenancePrompts).map(
+                        ([stageName, entry]) => (
+                          <div
+                            key={stageName}
+                            className="rounded-2xl border border-border bg-surface px-4 py-3"
+                          >
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <p className="font-medium capitalize text-foreground">
+                                {stageName.replaceAll("_", " ")}
+                              </p>
+                              {entry?.model ? (
+                                <span className="rounded-full border border-border px-2.5 py-0.5 text-xs text-muted-strong">
+                                  {entry.model}
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="mt-2 text-muted">
+                              {entry?.prompt_id ??
+                                "Prompt metadata unavailable."}
+                            </p>
+                            <p className="text-xs text-muted">
+                              v{entry?.version ?? "?"} ·{" "}
+                              {entry?.template_hash ?? "no-template-hash"}
+                            </p>
                           </div>
-                          <p className="mt-2 text-muted">{entry?.prompt_id ?? "Prompt metadata unavailable."}</p>
-                          <p className="text-xs text-muted">
-                            v{entry?.version ?? "?"} · {entry?.template_hash ?? "no-template-hash"}
-                          </p>
-                        </div>
-                      ))
+                        ),
+                      )
                     ) : (
-                      <p className="text-muted">Prompt registry metadata will load from the provenance artifact after export.</p>
+                      <p className="text-muted">
+                        Prompt registry metadata will load from the provenance
+                        artifact after export.
+                      </p>
                     )}
                   </div>
                 </div>
 
                 <div className="rounded-3xl border border-border bg-surface-elevated p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Provider references</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                    Provider references
+                  </p>
                   <div className="mt-3 grid gap-3 sm:grid-cols-2">
                     <div className="rounded-2xl border border-border bg-surface px-4 py-3">
-                      <p className="font-medium text-foreground">Image generation</p>
+                      <p className="font-medium text-foreground">
+                        Image generation
+                      </p>
                       <p className="mt-2 text-muted">
-                        {imageProviderRefs.length > 0 ? imageProviderRefs.join(", ") : "No image provider jobs recorded yet."}
+                        {imageProviderRefs.length > 0
+                          ? imageProviderRefs.join(", ")
+                          : "No image provider jobs recorded yet."}
                       </p>
                     </div>
                     <div className="rounded-2xl border border-border bg-surface px-4 py-3">
-                      <p className="font-medium text-foreground">Video generation</p>
+                      <p className="font-medium text-foreground">
+                        Video generation
+                      </p>
                       <p className="mt-2 text-muted">
-                        {videoProviderRefs.length > 0 ? videoProviderRefs.join(", ") : "No video provider jobs recorded yet."}
+                        {videoProviderRefs.length > 0
+                          ? videoProviderRefs.join(", ")
+                          : "No video provider jobs recorded yet."}
                       </p>
                     </div>
                   </div>
                 </div>
 
                 <div className="rounded-3xl border border-border bg-surface-elevated p-4">
-                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">Artifact metadata</p>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted">
+                    Artifact metadata
+                  </p>
                   <div className="mt-3 space-y-2 text-muted">
                     <p>
-                      Final MP4 expires: {provenance?.signed_artifacts?.final_mp4?.expires_at ?? "Available after export"}
+                      Final MP4 expires:{" "}
+                      {provenance?.signed_artifacts?.final_mp4?.expires_at ??
+                        "Available after export"}
                     </p>
                     <p>
-                      Duration / codec: {provenance?.export_metadata?.duration_seconds ?? "—"}s · {provenance?.export_metadata?.codec ?? "—"}
+                      Duration / codec:{" "}
+                      {provenance?.export_metadata?.duration_seconds ?? "—"}s ·{" "}
+                      {provenance?.export_metadata?.codec ?? "—"}
                     </p>
                     <p>
-                      FPS / soundtrack: {provenance?.export_metadata?.fps ?? "—"} · {provenance?.export_metadata?.soundtrack ?? "—"}
+                      FPS / soundtrack:{" "}
+                      {provenance?.export_metadata?.fps ?? "—"} ·{" "}
+                      {provenance?.export_metadata?.soundtrack ?? "—"}
                     </p>
                   </div>
                 </div>

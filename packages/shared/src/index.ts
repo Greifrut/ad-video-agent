@@ -95,6 +95,11 @@ export type {
   SubtitlesExportGeneratorOptions,
 } from "./domain/subtitles-export";
 export {
+  computeArtifactRouteSignature,
+  DEV_ARTIFACT_ROUTE_SIGNING_SECRET,
+  resolveArtifactRouteSigningSecret,
+} from "./domain/artifact-signing";
+export {
   createOpenAINormalizer,
 } from "./domain/openai-normalizer";
 export type {

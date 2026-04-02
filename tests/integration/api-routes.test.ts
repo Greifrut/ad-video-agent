@@ -3,15 +3,21 @@ import os from "node:os";
 import path from "node:path";
 import { NextRequest } from "next/server";
 import {
-  createRuntimeNormalizeStageHandler,
+  computeArtifactRouteSignature,
+  createGeminiImageStageHandler,
+  createOpenAINormalizeStageHandler,
   createRuntimeValidatePolicyStageHandler,
   createSQLiteRunEngine,
   createStageHandlers,
   createSubtitlesExportStageHandler,
+  createVeoVideoStageHandler,
   parseNormalizedBrief,
+  type GeminiFlashImageClient,
   type MediaCommandRunner,
+  type OpenAIResponsesClient,
   type RunPhase,
   type StageHandler,
+  type VeoVideoClient,
 } from "@shared/index";
 import { resetRateLimitersForTests } from "@/app/api/_server/rate-limit";
 import { resetRunEngineForTests } from "@/app/api/_server/run-engine-instance";
@@ -82,6 +88,96 @@ function createMockMediaRunner(): MediaCommandRunner {
       }),
       stderr: "",
     };
+  };
+}
+
+function createFixtureOpenAIClient(): OpenAIResponsesClient {
+  return {
+    createResponse: async () => {
+      return {
+        id: "fixture-openai-1",
+        output_text: JSON.stringify({
+          schemaVersion: "1.0.0",
+          briefId: "fixture-brief-1",
+          campaignName: "Fixture Campaign",
+          objective: "Create a simple fixture ad",
+          language: "en",
+          aspectRatio: "16:9",
+          unresolvedQuestions: [],
+          scenes: [
+            {
+              sceneId: "scene-intro",
+              sceneType: "intro",
+              visualCriticality: "supporting",
+              narrative: "Intro with logo and background",
+              desiredTags: ["logo", "background"],
+              approvedAssetIds: [],
+              generationMode: "asset_derived",
+              requestedTransform: "overlay",
+              durationSeconds: 5,
+            },
+            {
+              sceneId: "scene-product",
+              sceneType: "product_focus",
+              visualCriticality: "brand_critical",
+              narrative: "Product hero moment",
+              desiredTags: ["product", "packshot"],
+              approvedAssetIds: [],
+              generationMode: "asset_derived",
+              requestedTransform: "animate",
+              durationSeconds: 6,
+            },
+          ],
+        }),
+      };
+    },
+  };
+}
+
+function createFixtureGeminiClient(): GeminiFlashImageClient {
+  return {
+    generateSceneStill: async (request) => {
+      return {
+        provider_job_reference: `fixture-gemini-${request.scene.sceneId}`,
+        still: {
+          still_id: `still-${request.scene.sceneId}`,
+          storage_path: `mock://derived/${request.runId}/${request.scene.sceneId}.png`,
+          canonical_mime: "image/png",
+          byte_size: 1024,
+          width: 1280,
+          height: 720,
+          sha256: `sha-${request.scene.sceneId}`,
+        },
+      };
+    },
+  };
+}
+
+function createFixtureVeoClient(): VeoVideoClient {
+  return {
+    startSceneVideoGeneration: async (request) => {
+      return {
+        provider_job_reference: `fixture-veo-${request.scene.sceneId}`,
+      };
+    },
+    getSceneVideoGenerationStatus: async (request) => {
+      const sceneId = request.providerJobReference.replace("fixture-veo-", "");
+      return {
+        status: "succeeded",
+        latencyMs: 300,
+        clip: {
+          clip_id: `clip-${sceneId}`,
+          storage_path: `mock://video/${sceneId}.mp4`,
+          canonical_mime: "video/mp4",
+          byte_size: 2048,
+          duration_seconds: 5,
+          fps: 24,
+          width: 1280,
+          height: 720,
+          sha256: `video-sha-${sceneId}`,
+        },
+      };
+    },
   };
 }
 
@@ -360,6 +456,8 @@ describe("api-routes", () => {
 
   test("artifact route serves signed artifacts without exposing filesystem paths", async () => {
     const env = await createIsolatedEnvironment();
+    const signingSecret = "test-signing-secret";
+    process.env.ARTIFACT_ROUTE_SIGNING_SECRET = signingSecret;
 
     const setupEngine = await createSQLiteRunEngine({ sqlitePath: env.sqlitePath, leaseDurationMs: 200 });
     await setupEngine.initialize();
@@ -423,6 +521,18 @@ describe("api-routes", () => {
     };
 
     const expiresAt = "2036-04-02T12:00:00.000Z";
+    const finalSignature = computeArtifactRouteSignature({
+      runId: started.runId,
+      artifactName: "final.mp4",
+      expiresAtIso: expiresAt,
+      signingSecret,
+    });
+    const provenanceSignature = computeArtifactRouteSignature({
+      runId: started.runId,
+      artifactName: "provenance.json",
+      expiresAtIso: expiresAt,
+      signingSecret,
+    });
     const subtitlesStage: StageHandler = async (context) => {
       return {
         type: "success",
@@ -432,14 +542,14 @@ describe("api-routes", () => {
               final_mp4: {
                 route_path: `/api/v1/runs/${context.runId}/artifacts/final.mp4`,
                 signed_path:
-                  `/api/v1/runs/${context.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-final`,
+                  `/api/v1/runs/${context.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=${finalSignature}`,
                 expires_at: expiresAt,
                 ttl_seconds: 24 * 60 * 60,
               },
               provenance_json: {
                 route_path: `/api/v1/runs/${context.runId}/artifacts/provenance.json`,
                 signed_path:
-                  `/api/v1/runs/${context.runId}/artifacts/provenance.json?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-provenance`,
+                  `/api/v1/runs/${context.runId}/artifacts/provenance.json?expires=${encodeURIComponent(expiresAt)}&signature=${provenanceSignature}`,
                 expires_at: expiresAt,
                 ttl_seconds: 24 * 60 * 60,
               },
@@ -469,7 +579,7 @@ describe("api-routes", () => {
 
     const finalResponse = await getArtifactRoute(
       new Request(
-        `http://localhost/api/v1/runs/${started.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=test-signature-final`,
+        `http://localhost/api/v1/runs/${started.runId}/artifacts/final.mp4?expires=${encodeURIComponent(expiresAt)}&signature=${finalSignature}`,
       ),
       {
         params: Promise.resolve({
@@ -495,6 +605,19 @@ describe("api-routes", () => {
       },
     );
     expect(invalidSignatureResponse.status).toBe(403);
+
+    const invalidExpirySignatureResponse = await getArtifactRoute(
+      new Request(
+        `http://localhost/api/v1/runs/${started.runId}/artifacts/final.mp4?expires=${encodeURIComponent("2036-04-03T12:00:00.000Z")}&signature=${finalSignature}`,
+      ),
+      {
+        params: Promise.resolve({
+          runId: started.runId,
+          artifactName: "final.mp4",
+        }),
+      },
+    );
+    expect(invalidExpirySignatureResponse.status).toBe(403);
   });
 
   test("start route succeeds when data directories are initially missing", async () => {
@@ -542,8 +665,24 @@ describe("api-routes", () => {
     const startPayload = (await startResponse.json()) as { runId: string };
 
     const handlers = createStageHandlers({
-      normalize: createRuntimeNormalizeStageHandler(),
+      normalize: createOpenAINormalizeStageHandler({
+        client: createFixtureOpenAIClient(),
+        model: "gpt-5.4-mini",
+      }),
       validatePolicy: createRuntimeValidatePolicyStageHandler(),
+      imageGeneration: createGeminiImageStageHandler({
+        client: createFixtureGeminiClient(),
+        model: "gemini-2.5-flash-image",
+        approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+      }),
+      videoGeneration: createVeoVideoStageHandler({
+        client: createFixtureVeoClient(),
+        model: "veo-3.1-generate-preview",
+        clock: {
+          now: () => Date.now(),
+          sleep: async () => {},
+        },
+      }),
       subtitlesExport: createSubtitlesExportStageHandler({
         artifactsRootDir: env.artifactsDir,
         tempRootDir: path.join(env.tempRoot, "tmp"),
