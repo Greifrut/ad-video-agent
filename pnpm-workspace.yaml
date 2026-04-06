@@ -1,3 +1,9 @@
+packages:
+  - "packages/*"
+  - "worker"
+
 ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
+onlyBuiltDependencies:
+  - sqlite3

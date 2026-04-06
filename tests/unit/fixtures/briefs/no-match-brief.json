@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "briefId": "brief-no-match-001",
+  "campaignName": "Deal Pump Mood Reel",
+  "objective": "Create a neutral setup scene before product reveal",
+  "language": "en",
+  "aspectRatio": "16:9",
+  "unresolvedQuestions": [],
+  "scenes": [
+    {
+      "sceneId": "scene-no-match",
+      "sceneType": "background_plate",
+      "visualCriticality": "supporting",
+      "narrative": "Soft gradient plate with no specific branded assets selected yet",
+      "desiredTags": ["background", "studio"],
+      "approvedAssetIds": [],
+      "generationMode": "asset_derived",
+      "requestedTransform": "resize",
+      "durationSeconds": 4
+    }
+  ]
+}
