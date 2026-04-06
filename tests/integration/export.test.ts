@@ -21,7 +21,7 @@ function createNormalizedBrief() {
     schemaVersion: BRIEF_SCHEMA_VERSION,
     briefId: "brief-export-1",
     campaignName: "Export Integration",
-    objective: "Assemble clips and burn subtitles",
+    objective: "Assemble clips and preserve generated audio",
     language: "en" as const,
     aspectRatio: "16:9" as const,
     unresolvedQuestions: [],
@@ -31,7 +31,7 @@ function createNormalizedBrief() {
         sceneType: "intro" as const,
         visualCriticality: "supporting" as const,
         narrative:
-          "This opening line is intentionally long so subtitle wrapping can be validated for deterministic output formatting in export tests.",
+          "This opening line is intentionally long so audio-preserving export can be validated for deterministic output formatting in export tests.",
         desiredTags: ["logo", "background"] as const,
         approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
         generationMode: "asset_derived" as const,
@@ -73,14 +73,27 @@ function createMockMediaRunner(options?: {
 
         const durationFromLavfi = args.find((value) => value.includes("color=") && value.includes(":d="));
         const durationMatch = durationFromLavfi?.match(/:d=([0-9.]+)/);
-        const duration = durationMatch ? Number.parseFloat(durationMatch[1] ?? "2") : 2;
+        const trimIndex = args.lastIndexOf("-t");
+        const trimmedDuration =
+          trimIndex >= 0 ? Number.parseFloat(args[trimIndex + 1] ?? "2") : Number.NaN;
+        const duration = durationMatch
+          ? Number.parseFloat(durationMatch[1] ?? "2")
+          : Number.isFinite(trimmedDuration)
+            ? trimmedDuration
+            : 2;
+        const hasAudio =
+          !args.includes("-an") &&
+          (args.includes("-c:a") ||
+            args.some((value) => value.includes("anullsrc")) ||
+            args.includes("0:a:0") ||
+            args.includes("1:a:0"));
         metadataByPath.set(outputPath, {
-          width: 1280,
-          height: 720,
+          width: 1080,
+          height: 2430,
           codec: "h264",
           fps: 24,
           duration: Number.isFinite(duration) ? duration : 2,
-          hasAudio: false,
+          hasAudio,
         });
       }
 
@@ -101,12 +114,12 @@ function createMockMediaRunner(options?: {
     }
 
     const metadata = metadataByPath.get(inputPath) ?? {
-      width: 1280,
-      height: 720,
+      width: 1080,
+      height: 2430,
       codec: "h264",
       fps: 24,
       duration: 5,
-      hasAudio: false,
+      hasAudio: true,
     };
 
     const streams = [
@@ -142,7 +155,7 @@ function createMockMediaRunner(options?: {
 }
 
 describe("export", () => {
-  test("subtitles_export validates clips, assembles MP4, writes provenance, and stores signed routes", async () => {
+  test("subtitles_export validates clips, preserves audio, writes provenance, and stores signed routes", async () => {
     const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deal-pump-export-"));
     const sqlitePath = path.join(tempRoot, "deal-pump.sqlite");
     const artifactsRoot = path.join(tempRoot, "artifacts");
@@ -305,13 +318,13 @@ describe("export", () => {
     };
 
     expect(exportResult.export_spec).toEqual({
-      width: 1280,
-      height: 720,
+      width: 1080,
+      height: 2430,
       fps: 24,
       codec: "h264",
       container: "mp4",
-      max_duration_seconds: 30,
-      soundtrack: "none",
+      max_duration_seconds: 10,
+      soundtrack: "provider_audio",
     });
     expect(exportResult.export_metadata.fixture_mode).toBe(false);
     expect(exportResult.artifact_routes.final_mp4.ttl_seconds).toBe(24 * 60 * 60);
@@ -369,7 +382,7 @@ describe("export", () => {
     expect(provenance.checksums.provenance_sha256).toBe(exportResult.checksums.provenance_sha256);
     expect(provenance.signed_artifacts.final_mp4.ttl_seconds).toBe(24 * 60 * 60);
     expect(provenance.signed_artifacts.final_mp4.route_path).toContain(`/runs/${started.runId}/artifacts/final.mp4`);
-    expect(provenance.export_metadata.soundtrack).toBe("none");
+    expect(provenance.export_metadata.soundtrack).toBe("provider_audio");
 
     const clipOneProbeIndex = mediaRunner.calls.findIndex(
       (call) => call.command === "ffprobe" && call.args[call.args.length - 1] === clipOnePath,

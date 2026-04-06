@@ -1,4 +1,6 @@
 import { spawn } from "node:child_process";
+import { loadLocalEnv } from "./load-local-env";
+import { resolveGoogleCredentials } from "./resolve-google-credentials";
 import {
   loadBootstrapEnvironment,
   redactSecrets,
@@ -16,6 +18,9 @@ function readMode(rawValue: string | undefined): Mode {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
+  await resolveGoogleCredentials();
+
   const mode = readMode(process.argv[2]);
   const rawArgs = process.argv.slice(3);
   const nextArgs = rawArgs[0] === "--" ? rawArgs.slice(1) : rawArgs;

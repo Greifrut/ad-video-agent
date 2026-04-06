@@ -7,6 +7,7 @@ export {
 } from "./bootstrap/constants";
 export {
   loadBootstrapEnvironment,
+  prepareBootstrapStorage,
   validateBootstrapEnvironment,
 } from "./bootstrap/env";
 export type { BootstrapEnvironment } from "./bootstrap/env";
@@ -77,6 +78,7 @@ export {
   createGeminiImageGenerator,
   createVertexGeminiFlashImageClient,
 } from "./domain/gemini-image";
+export { createPreGeneratedImageGenerator } from "./domain/pre-generated-image";
 export type {
   GeminiFlashImageClient,
   GeminiImageGeneratorResult,
@@ -85,6 +87,7 @@ export type {
   GeminiSceneStillResponse,
   VertexGeminiFlashImageClientOptions,
 } from "./domain/gemini-image";
+export type { PreGeneratedImageGeneratorOptions, PreGeneratedImageGeneratorResult } from "./domain/pre-generated-image";
 export {
   createVeoVideoGenerator,
   createVertexVeoVideoClient,
@@ -125,12 +128,14 @@ export {
   createGeminiImageStageHandler,
   createMockStageHandlers,
   createOpenAINormalizeStageHandler,
+  createPreGeneratedImageStageHandler,
   createStageHandlers,
   createSubtitlesExportStageHandler,
   createVeoVideoStageHandler,
 } from "./run-engine/stage-handlers";
 export type {
   GeminiImageStageOptions,
+  PreGeneratedImageStageOptions,
   VeoVideoStageOptions,
   SubtitlesExportStageOptions,
 } from "./run-engine/stage-handlers";

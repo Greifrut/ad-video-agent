@@ -13,6 +13,9 @@ import {
 
 const DEFAULT_MODEL = "gpt-5.4-mini";
 const DEFAULT_MAX_INPUT_CHARS = 4_000;
+const MAX_SCENE_DURATION_SECONDS = 10;
+const MAX_TOTAL_DURATION_SECONDS = 10;
+const SUPPORTED_VEO_SCENE_DURATIONS = [4, 6, 8] as const;
 const CONTROL_CHARACTERS = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
 
 type ResponseInputMessage = {
@@ -236,6 +239,62 @@ function metadataFromPrompt(prompt: PromptRegistryEntry, model: string): PromptM
   };
 }
 
+function clampBriefDurations(brief: NormalizedBrief): NormalizedBrief {
+  let remainingDuration = MAX_TOTAL_DURATION_SECONDS;
+  const scenes: Array<NormalizedBrief["scenes"][number]> = [];
+
+  for (const scene of brief.scenes) {
+    if (remainingDuration < 4) {
+      break;
+    }
+
+    const nextDuration = chooseSupportedSceneDuration(scene.durationSeconds, remainingDuration);
+    if (nextDuration === null) {
+      break;
+    }
+
+    scenes.push({
+      ...scene,
+      durationSeconds: nextDuration,
+    });
+    remainingDuration -= nextDuration;
+  }
+
+  return {
+    ...brief,
+    scenes,
+  };
+}
+
+function chooseSupportedSceneDuration(requestedDuration: number, remainingDuration: number): 4 | 6 | 8 | null {
+  const boundedRequestedDuration = Math.max(
+    1,
+    Math.min(MAX_SCENE_DURATION_SECONDS, Math.round(requestedDuration)),
+  );
+  const supportedCandidates = SUPPORTED_VEO_SCENE_DURATIONS.filter(
+    (duration) => duration <= remainingDuration,
+  );
+
+  if (supportedCandidates.length === 0) {
+    return null;
+  }
+
+  return supportedCandidates.reduce((bestDuration, candidate) => {
+    const bestDistance = Math.abs(bestDuration - boundedRequestedDuration);
+    const candidateDistance = Math.abs(candidate - boundedRequestedDuration);
+
+    if (candidateDistance < bestDistance) {
+      return candidate;
+    }
+
+    if (candidateDistance === bestDistance) {
+      return Math.min(bestDuration, candidate) as 4 | 6 | 8;
+    }
+
+    return bestDuration;
+  });
+}
+
 function reasonCodesFromCandidate(candidate: string): FailureReasonCode[] {
   const parsedCandidate = parseModelJson(candidate);
   if (parsedCandidate === null) {
@@ -314,9 +373,10 @@ export function createOpenAINormalizer(options: OpenAINormalizerOptions): {
         const initialCandidate = parseModelJson(initialText);
         const initialParsed = parseNormalizedBrief(initialCandidate);
         if (initialParsed.ok && !containsModelSelectedAssetIds(initialParsed.value)) {
+          const clampedBrief = clampBriefDurations(initialParsed.value);
           return {
             outcome: "ok",
-            normalizedBrief: initialParsed.value,
+            normalizedBrief: clampedBrief,
             promptMetadata: [normalizeMetadata],
             providerRef,
             sanitizedBrief,
@@ -348,9 +408,10 @@ export function createOpenAINormalizer(options: OpenAINormalizerOptions): {
         const repairedCandidate = parseModelJson(repairedText);
         const repairedParsed = parseNormalizedBrief(repairedCandidate);
         if (repairedParsed.ok && !containsModelSelectedAssetIds(repairedParsed.value)) {
+          const clampedBrief = clampBriefDurations(repairedParsed.value);
           return {
             outcome: "ok",
-            normalizedBrief: repairedParsed.value,
+            normalizedBrief: clampedBrief,
             promptMetadata: [normalizeMetadata, repairMetadata],
             providerRef,
             sanitizedBrief,

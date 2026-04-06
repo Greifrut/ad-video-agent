@@ -30,7 +30,7 @@ Return JSON only, with exactly these root keys and no extras:
 - campaignName (string)
 - objective (string)
 - language (string; must be "en")
-- aspectRatio (string; one of "16:9", "9:16", "1:1")
+- aspectRatio (string; one of "16:9", "9:16", "4:9", "1:1")
 - unresolvedQuestions (array of strings)
 - scenes (array of scene objects)
 
@@ -43,9 +43,13 @@ Each scene object must have exactly these keys and no extras:
 - approvedAssetIds (array of strings; MUST be empty because deterministic asset selection happens later)
 - generationMode ("asset_derived" | "text_only")
 - requestedTransform ("none" | "crop" | "resize" | "overlay" | "color_grade" | "animate")
-- durationSeconds (number > 0 and <= 20)
+- durationSeconds (number; MUST be one of 4, 6, or 8)
 
 If information is missing or ambiguous, put clarifying questions into unresolvedQuestions.
+
+Prefer a vertical short-form social ad unless the user explicitly asks otherwise. Use "4:9" when the script implies Instagram/Reels/TikTok style output.
+Keep the full creative at or under 10 seconds total.
+Use Veo-compatible scene lengths only: 4, 6, or 8 seconds. Prefer 4-second scenes when possible to reduce cost.
 
 Output JSON only.` ,
     template_hash: "6b9f21ac2e5bc1df7f2e850cac906140224f5e7fa49a2f9e02609d198701b006",
@@ -97,7 +101,7 @@ Hard constraints:
     contractVersion: SHARED_CONTRACT_VERSION,
     prompt_id: VEO_IMAGE_TO_VIDEO_PROMPT_ID,
     version: 1,
-    template: `Generate one short scene video clip from a provided first-frame still image reference and approved-source lineage metadata.
+    template: `Generate one short 4:9 vertical scene video clip from a provided first-frame still image reference and approved-source lineage metadata.
 
 Hard constraints:
 - Treat first_frame as mandatory; do not run text-only generation.

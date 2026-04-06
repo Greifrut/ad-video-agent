@@ -1,18 +1,19 @@
 @import "tailwindcss";
 
 :root {
-  --background: #eef3ff;
-  --foreground: #111827;
-  --surface: rgba(255, 255, 255, 0.78);
-  --surface-elevated: rgba(255, 255, 255, 0.94);
-  --muted: #52607a;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --surface: rgba(255, 255, 255, 0.7);
+  --surface-elevated: rgba(255, 255, 255, 0.9);
+  --muted: #64748b;
   --muted-strong: #334155;
-  --border: rgba(90, 114, 157, 0.18);
-  --accent: #1d9bf0;
-  --accent-soft: rgba(29, 155, 240, 0.12);
-  --success: #0f9f6e;
-  --warning: #c57a10;
-  --danger: #dc4f68;
+  --border: rgba(148, 163, 184, 0.2);
+  --accent: #4f46e5;
+  --accent-soft: rgba(79, 70, 229, 0.1);
+  --accent-glow: rgba(79, 70, 229, 0.4);
+  --success: #10b981;
+  --warning: #f59e0b;
+  --danger: #ef4444;
 }
 
 @theme inline {
@@ -25,6 +26,7 @@
   --color-border: var(--border);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
+  --color-accent-glow: var(--accent-glow);
   --color-success: var(--success);
   --color-warning: var(--warning);
   --color-danger: var(--danger);
@@ -34,39 +36,78 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #07111f;
-    --foreground: #f7fbff;
-    --surface: rgba(8, 18, 34, 0.78);
-    --surface-elevated: rgba(10, 24, 45, 0.94);
-    --muted: #9fb0c7;
-    --muted-strong: #d8e4f2;
-    --border: rgba(149, 179, 224, 0.16);
-    --accent: #58c2ff;
-    --accent-soft: rgba(88, 194, 255, 0.12);
+    --background: #020617;
+    --foreground: #f8fafc;
+    --surface: rgba(15, 23, 42, 0.6);
+    --surface-elevated: rgba(30, 41, 59, 0.85);
+    --muted: #94a3b8;
+    --muted-strong: #e2e8f0;
+    --border: rgba(148, 163, 184, 0.15);
+    --accent: #6366f1;
+    --accent-soft: rgba(99, 102, 241, 0.15);
+    --accent-glow: rgba(99, 102, 241, 0.6);
     --success: #34d399;
-    --warning: #f6ad55;
+    --warning: #fbbf24;
     --danger: #fb7185;
   }
 }
 
+@keyframes gradientMovement {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
 body {
   background:
-    radial-gradient(circle at top left, rgba(88, 194, 255, 0.2), transparent 30%),
-    radial-gradient(circle at top right, rgba(129, 140, 248, 0.14), transparent 25%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.35), transparent 24rem),
+    radial-gradient(circle at 15% 50%, rgba(99, 102, 241, 0.15), transparent 40%),
+    radial-gradient(circle at 85% 30%, rgba(168, 85, 247, 0.12), transparent 40%),
+    linear-gradient(135deg, rgba(255,255,255,0.05) 0%, rgba(0,0,0,0.05) 100%),
     var(--background);
+  background-size: 200% 200%;
+  animation: gradientMovement 20s ease infinite;
   color: var(--foreground);
   font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }
 
 ::selection {
-  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  background: color-mix(in srgb, var(--accent) 40%, transparent);
+  color: white;
 }
 
 .panel {
   border: 1px solid var(--border);
   border-radius: 2rem;
   background: var(--surface);
-  box-shadow: 0 28px 80px rgba(15, 23, 42, 0.12);
-  backdrop-filter: blur(24px);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 24px 60px -10px rgba(0, 0, 0, 0.1);
+  backdrop-filter: blur(32px);
+  -webkit-backdrop-filter: blur(32px);
+  position: relative;
+  overflow: hidden;
+}
+
+/* Subtle inner glow for premium feel */
+.panel::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.1);
+  pointer-events: none;
+}
+
+/* Custom gorgeous scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background-color: var(--border);
+  border-radius: 20px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: var(--muted);
 }

@@ -3,12 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import {
   BRIEF_SCHEMA_VERSION,
-  createGeminiImageStageHandler,
+  createPreGeneratedImageStageHandler,
   createSQLiteRunEngine,
   createStageHandlers,
   createVeoVideoStageHandler,
-  type GeminiSceneStillRequest,
-  type GeminiSceneStillResponse,
   type StageHandler,
   type VeoSceneVideoStartRequest,
   type VeoSceneVideoStatusRequest,
@@ -40,34 +38,9 @@ function createNormalizedBrief(scenes: TestScene[]) {
     campaignName: "Veo Adapter Integration",
     objective: "Animate derived stills into clips",
     language: "en",
-    aspectRatio: "16:9",
+    aspectRatio: "4:9",
     unresolvedQuestions: [],
     scenes,
-  };
-}
-
-function createFakeGeminiClient() {
-  const requests: GeminiSceneStillRequest[] = [];
-
-  return {
-    requests,
-    client: {
-      generateSceneStill: async (request: GeminiSceneStillRequest): Promise<GeminiSceneStillResponse> => {
-        requests.push(request);
-        return {
-          provider_job_reference: `vertex-image-${request.scene.sceneId}`,
-          still: {
-            still_id: `still-${request.scene.sceneId}`,
-            storage_path: `mock://derived/${request.runId}/${request.scene.sceneId}.png`,
-            canonical_mime: "image/png",
-            byte_size: 1024,
-            width: 1280,
-            height: 720,
-            sha256: `sha-${request.scene.sceneId}`,
-          },
-        };
-      },
-    },
   };
 }
 
@@ -149,9 +122,9 @@ describe("veo-adapter", () => {
                 sceneId: "scene-intro",
                 sceneType: "intro",
                 visualCriticality: "supporting",
-                narrative: "Logo reveal",
-                desiredTags: ["logo", "background"],
-                approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
+                narrative: "Spokeswoman hook",
+                desiredTags: ["hero", "social"],
+                approvedAssetIds: ["hook-spokeswoman-dealpump"],
                 generationMode: "asset_derived",
                 requestedTransform: "overlay",
                 durationSeconds: 5,
@@ -160,12 +133,12 @@ describe("veo-adapter", () => {
                 sceneId: "scene-product",
                 sceneType: "product_focus",
                 visualCriticality: "brand_critical",
-                narrative: "Packshot hero",
+                narrative: "Product demo close-up",
                 desiredTags: ["product", "packshot"],
-                approvedAssetIds: ["product-can-classic-packshot"],
+                approvedAssetIds: ["product-demo-closeup"],
                 generationMode: "asset_derived",
                 requestedTransform: "crop",
-                durationSeconds: 6,
+                durationSeconds: 5,
               },
             ]),
             reason_codes: [],
@@ -175,9 +148,9 @@ describe("veo-adapter", () => {
               sceneId: "scene-intro",
               sceneType: "intro",
               visualCriticality: "supporting",
-              narrative: "Logo reveal",
-              desiredTags: ["logo", "background"],
-              approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
+              narrative: "Spokeswoman hook",
+              desiredTags: ["hero", "social"],
+              approvedAssetIds: ["hook-spokeswoman-dealpump"],
               generationMode: "asset_derived",
               requestedTransform: "overlay",
               durationSeconds: 5,
@@ -186,12 +159,12 @@ describe("veo-adapter", () => {
               sceneId: "scene-product",
               sceneType: "product_focus",
               visualCriticality: "brand_critical",
-              narrative: "Packshot hero",
+              narrative: "Product demo close-up",
               desiredTags: ["product", "packshot"],
-              approvedAssetIds: ["product-can-classic-packshot"],
+              approvedAssetIds: ["product-demo-closeup"],
               generationMode: "asset_derived",
               requestedTransform: "crop",
-              durationSeconds: 6,
+              durationSeconds: 5,
             },
           ]),
         },
@@ -205,9 +178,8 @@ describe("veo-adapter", () => {
         data: {
           validate_policy: {
             selected_asset_ids: [
-              "brand-wordmark-primary",
-              "studio-gradient-backdrop",
-              "product-can-classic-packshot",
+              "hook-spokeswoman-dealpump",
+              "product-demo-closeup",
             ],
           },
           normalized_brief: payload.normalized_brief,
@@ -215,11 +187,14 @@ describe("veo-adapter", () => {
       };
     };
 
-    const fakeGemini = createFakeGeminiClient();
-    const imageStage = createGeminiImageStageHandler({
-      client: fakeGemini.client,
-      model: "gemini-2.5-flash-image",
-      approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+    const assetsRoot = path.join(tempRoot, "approved-assets");
+    await fs.mkdir(assetsRoot, { recursive: true });
+    await fs.writeFile(path.join(assetsRoot, "01-hook-spokeswoman-dealpump.png"), Buffer.from("intro-image"));
+    await fs.writeFile(path.join(assetsRoot, "02-product-demo-closeup.png"), Buffer.from("product-image"));
+
+    const imageStage = createPreGeneratedImageStageHandler({
+      assetsRootDir: assetsRoot,
+      model: "pre_generated_assets",
     });
 
     const fakeVeo = createHappyVeoClient();
@@ -265,7 +240,7 @@ describe("veo-adapter", () => {
     const projection = await engine.getRunProjection(started.runId);
     expect(projection.phase).toBe("completed");
     expect(fakeVeo.startRequests).toHaveLength(2);
-    expect(fakeVeo.startRequests[0]?.firstFrame.storagePath).toContain("scene-intro");
+    expect(fakeVeo.startRequests[0]?.firstFrame.storagePath).toContain("01-hook-spokeswoman-dealpump.png");
 
     const videoEvent = projection.events.find(
       (event) =>
@@ -321,8 +296,8 @@ describe("veo-adapter", () => {
         sceneType: "intro",
         visualCriticality: "brand_critical",
         narrative: "Scene that never completes",
-        desiredTags: ["logo"],
-        approvedAssetIds: ["brand-wordmark-primary"],
+        desiredTags: ["hero"],
+        approvedAssetIds: ["hook-spokeswoman-dealpump"],
         generationMode: "asset_derived",
         requestedTransform: "overlay",
         durationSeconds: 5,
@@ -350,7 +325,7 @@ describe("veo-adapter", () => {
         type: "success",
         data: {
           validate_policy: {
-            selected_asset_ids: ["brand-wordmark-primary"],
+            selected_asset_ids: ["hook-spokeswoman-dealpump"],
           },
           normalized_brief: normalizedBrief,
         },
@@ -369,18 +344,18 @@ describe("veo-adapter", () => {
               model: "gemini-2.5-flash-image",
             },
             model_name: "gemini-2.5-flash-image",
-            source_asset_ids: ["brand-wordmark-primary"],
+            source_asset_ids: ["hook-spokeswoman-dealpump"],
             derived_stills: [
               {
                 scene_id: "scene-timeout",
-                source_asset_ids: ["brand-wordmark-primary"],
+                source_asset_ids: ["hook-spokeswoman-dealpump"],
                 provider_job_reference: "vertex-image-scene-timeout",
                 still_id: "still-scene-timeout",
-                storage_path: "mock://derived/scene-timeout.png",
+                storage_path: "/tmp/scene-timeout.png",
                 canonical_mime: "image/png",
                 byte_size: 1024,
-                width: 1280,
-                height: 720,
+                width: 1080,
+                height: 2430,
                 sha256: "sha-timeout",
               },
             ],

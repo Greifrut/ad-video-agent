@@ -4,15 +4,14 @@ import path from "node:path";
 import { NextRequest } from "next/server";
 import {
   computeArtifactRouteSignature,
-  createGeminiImageStageHandler,
   createOpenAINormalizeStageHandler,
+  createPreGeneratedImageStageHandler,
   createRuntimeValidatePolicyStageHandler,
   createSQLiteRunEngine,
   createStageHandlers,
   createSubtitlesExportStageHandler,
   createVeoVideoStageHandler,
   parseNormalizedBrief,
-  type GeminiFlashImageClient,
   type MediaCommandRunner,
   type OpenAIResponsesClient,
   type RunPhase,
@@ -47,8 +46,8 @@ function createMockMediaRunner(): MediaCommandRunner {
         const durationMatch = durationFromLavfi?.match(/:d=([0-9.]+)/);
         const duration = durationMatch ? Number.parseFloat(durationMatch[1] ?? "2") : 2;
         metadataByPath.set(outputPath, {
-          width: 1280,
-          height: 720,
+          width: 1080,
+          height: 2430,
           codec: "h264",
           fps: 24,
           duration: Number.isFinite(duration) ? duration : 2,
@@ -64,8 +63,8 @@ function createMockMediaRunner(): MediaCommandRunner {
 
     const inputPath = outputPath;
     const metadata = metadataByPath.get(inputPath) ?? {
-      width: 1280,
-      height: 720,
+      width: 1080,
+      height: 2430,
       codec: "h264",
       fps: 24,
       duration: 5,
@@ -129,25 +128,6 @@ function createFixtureOpenAIClient(): OpenAIResponsesClient {
             },
           ],
         }),
-      };
-    },
-  };
-}
-
-function createFixtureGeminiClient(): GeminiFlashImageClient {
-  return {
-    generateSceneStill: async (request) => {
-      return {
-        provider_job_reference: `fixture-gemini-${request.scene.sceneId}`,
-        still: {
-          still_id: `still-${request.scene.sceneId}`,
-          storage_path: `mock://derived/${request.runId}/${request.scene.sceneId}.png`,
-          canonical_mime: "image/png",
-          byte_size: 1024,
-          width: 1280,
-          height: 720,
-          sha256: `sha-${request.scene.sceneId}`,
-        },
       };
     },
   };
@@ -454,6 +434,153 @@ describe("api-routes", () => {
     expect(limitedResponse.status).toBe(429);
   });
 
+  test("status route includes provider failure details for actionable UI guidance", async () => {
+    const env = await createIsolatedEnvironment();
+    process.env.SQLITE_DB_PATH = env.sqlitePath;
+    process.env.ARTIFACTS_DIR = env.artifactsDir;
+    process.env.ARTIFACT_ROUTE_SIGNING_SECRET = "test-signing-secret";
+
+    const engine = await createSQLiteRunEngine({ sqlitePath: env.sqlitePath, leaseDurationMs: 200 });
+    await engine.initialize();
+    const started = await engine.startRun({
+      idempotencyKey: "provider-error-status",
+      payload: {
+        brief: "Create a short product video.",
+        fixture_mode: false,
+      },
+    });
+
+    const normalizeStage: StageHandler = async () => ({
+      type: "success",
+      data: {
+        normalize: {
+          prompt_metadata: [],
+          repair_attempted: false,
+          sanitized_brief: "sanitized",
+          normalized_brief: {
+            schemaVersion: "1.0.0",
+            briefId: "b1",
+            campaignName: "Provider Failure",
+            objective: "Create a short product video.",
+            language: "en",
+            aspectRatio: "4:9",
+            unresolvedQuestions: [],
+            scenes: [
+              {
+                sceneId: "scene_1",
+                sceneType: "intro",
+                visualCriticality: "supporting",
+                narrative: "Presenter in a studio",
+                desiredTags: ["hero"],
+                approvedAssetIds: ["hook-spokeswoman-dealpump"],
+                generationMode: "asset_derived",
+                requestedTransform: "overlay",
+                durationSeconds: 4,
+              },
+            ],
+          },
+          reason_codes: [],
+        },
+      },
+    });
+
+    const validatePolicyStage: StageHandler = async (context) => ({
+      type: "success",
+      data: {
+        validate_policy: {
+          selected_asset_ids: ["hook-spokeswoman-dealpump"],
+        },
+        normalized_brief: (context.payload as { normalized_brief: unknown }).normalized_brief,
+      },
+    });
+
+    const imageStage: StageHandler = async () => ({
+      type: "success",
+      data: {
+        image_generation: {
+          source_asset_ids: ["hook-spokeswoman-dealpump"],
+          derived_stills: [
+            {
+              scene_id: "scene_1",
+              source_asset_ids: ["hook-spokeswoman-dealpump"],
+              provider_job_reference: "local-asset-scene_1",
+              still_id: "still-scene_1",
+              storage_path: "/tmp/scene_1.png",
+              canonical_mime: "image/png",
+              byte_size: 128,
+              width: 1080,
+              height: 2430,
+              sha256: "sha-scene-1",
+            },
+          ],
+        },
+      },
+    });
+
+    const videoStage: StageHandler = async () => ({
+      type: "fatal_error",
+      reason: "veo provider failure for scene scene_1: usage guidelines",
+      providerRef: "projects/test/operations/123",
+      details: {
+        stage: "video_generation",
+        scene_id: "scene_1",
+        failure_type: "provider_failed_status",
+        provider_reason: "The prompt could not be submitted. This prompt contains words that violate Vertex AI's usage guidelines.",
+        provider_reason_code: "29310472",
+      },
+    });
+
+    const handlers = createStageHandlers({
+      normalize: normalizeStage,
+      validatePolicy: validatePolicyStage,
+      imageGeneration: imageStage,
+      videoGeneration: videoStage,
+    });
+
+    for (let index = 0; index < 8; index += 1) {
+      const claim = await engine.claimNextJob();
+      if (!claim) {
+        await sleep(5);
+        continue;
+      }
+
+      await engine.processClaim(claim, handlers);
+    }
+
+    await engine.close();
+
+    const statusResponse = await getRunStatusRoute(
+      new NextRequest(`http://localhost/api/v1/runs/${started.runId}`, {
+        method: "GET",
+        headers: {
+          "x-forwarded-for": "192.0.2.140",
+        },
+      }),
+      {
+        params: Promise.resolve({ runId: started.runId }),
+      },
+    );
+    expect(statusResponse.status).toBe(200);
+
+    const statusPayload = (await statusResponse.json()) as {
+      outcome: string;
+      errorCode?: string;
+      errorMessage?: string;
+      failureType?: string;
+      providerReason?: string;
+      providerReasonCode?: string;
+      sceneId?: string;
+    };
+
+    expect(statusPayload.outcome).toBe("provider_failed");
+    expect(statusPayload.errorCode).toBe("provider_failed");
+    expect(statusPayload.failureType).toBe("provider_failed_status");
+    expect(statusPayload.providerReason).toContain("usage guidelines");
+    expect(statusPayload.providerReasonCode).toBe("29310472");
+    expect(statusPayload.sceneId).toBe("scene_1");
+    expect(statusPayload.errorMessage).toContain("veo provider failure");
+  });
+
   test("artifact route serves signed artifacts without exposing filesystem paths", async () => {
     const env = await createIsolatedEnvironment();
     const signingSecret = "test-signing-secret";
@@ -664,16 +791,20 @@ describe("api-routes", () => {
     expect(startResponse.status).toBe(202);
     const startPayload = (await startResponse.json()) as { runId: string };
 
+    const approvedAssetsDir = path.join(env.tempRoot, "approved-assets");
+    await fs.mkdir(approvedAssetsDir, { recursive: true });
+    await fs.writeFile(path.join(approvedAssetsDir, "01-hook-spokeswoman-dealpump.png"), Buffer.from("intro-image"));
+    await fs.writeFile(path.join(approvedAssetsDir, "02-product-demo-closeup.png"), Buffer.from("product-image"));
+
     const handlers = createStageHandlers({
       normalize: createOpenAINormalizeStageHandler({
         client: createFixtureOpenAIClient(),
         model: "gpt-5.4-mini",
       }),
       validatePolicy: createRuntimeValidatePolicyStageHandler(),
-      imageGeneration: createGeminiImageStageHandler({
-        client: createFixtureGeminiClient(),
-        model: "gemini-2.5-flash-image",
-        approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+      imageGeneration: createPreGeneratedImageStageHandler({
+        assetsRootDir: approvedAssetsDir,
+        model: "pre_generated_assets",
       }),
       videoGeneration: createVeoVideoStageHandler({
         client: createFixtureVeoClient(),
@@ -721,9 +852,8 @@ describe("api-routes", () => {
     expect(statusPayload.outcome).toBe("ok");
     expect(statusPayload.normalizedBrief).toBeDefined();
     expect(statusPayload.selectedAssetIds).toEqual([
-      "brand-wordmark-primary",
-      "product-can-classic-packshot",
-      "studio-gradient-backdrop",
+      "hook-spokeswoman-dealpump",
+      "product-demo-closeup",
     ]);
     expect(statusPayload.resultUrl).toContain(`/api/v1/runs/${startPayload.runId}/artifacts/final.mp4`);
     expect(statusPayload.provenanceUrl).toContain(`/api/v1/runs/${startPayload.runId}/artifacts/provenance.json`);

@@ -1,13 +1,17 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveRouteDecision } from "./mode-routing";
+import { loadLocalEnv } from "../../scripts/load-local-env";
+import { resolveGoogleCredentials } from "../../scripts/resolve-google-credentials";
 import {
   createGeminiImageStageHandler,
   createOpenAINormalizeStageHandler,
   createOpenAIResponsesSdkClient,
+  createPreGeneratedImageStageHandler,
+  prepareBootstrapStorage,
   createRuntimeValidatePolicyStageHandler,
   createStageHandlers,
   createSubtitlesExportStageHandler,
-  createVertexGeminiFlashImageClient,
   createVertexVeoVideoClient,
   createSQLiteRunEngine,
   createVeoVideoStageHandler,
@@ -17,6 +21,7 @@ import {
   type GeminiFlashImageClient,
   type MediaCommandRunner,
   type OpenAIResponsesClient,
+  type RunEngineStage,
   type StageHandler,
   type VeoVideoClient,
   validateBootstrapEnvironment,
@@ -47,8 +52,8 @@ function createFixtureMediaCommandRunner(): MediaCommandRunner {
         const duration = durationMatch ? Number.parseFloat(durationMatch[1] ?? "2") : 2;
 
         metadataByPath.set(outputPath, {
-          width: 1280,
-          height: 720,
+          width: 1080,
+          height: 2430,
           codec: "h264",
           fps: 24,
           duration: Number.isFinite(duration) ? duration : 2,
@@ -64,8 +69,8 @@ function createFixtureMediaCommandRunner(): MediaCommandRunner {
 
     const inputPath = outputPath;
     const metadata = metadataByPath.get(inputPath) ?? {
-      width: 1280,
-      height: 720,
+      width: 1080,
+      height: 2430,
       codec: "h264",
       fps: 24,
       duration: 5,
@@ -189,13 +194,38 @@ function createFixtureVeoClient(): VeoVideoClient {
   };
 }
 
-function isFixtureModePayload(payload: unknown): boolean {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-    return false;
-  }
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
-  const fixtureMode = (payload as { fixture_mode?: unknown }).fixture_mode;
-  return fixtureMode === true;
+function summarizePayloadForLogs(payload: unknown): Record<string, unknown> {
+  const payloadRecord = isRecord(payload) ? payload : null;
+  const normalizedBrief = isRecord(payloadRecord?.normalized_brief) ? payloadRecord.normalized_brief : null;
+  const stageOutputs = isRecord(payloadRecord?.stage_outputs) ? Object.keys(payloadRecord.stage_outputs) : [];
+
+  return {
+    fixtureModeRequested: payloadRecord?.fixture_mode === true,
+    hasBrief: typeof payloadRecord?.brief === "string",
+    hasNormalizedBrief: normalizedBrief !== null,
+    normalizedSceneCount: Array.isArray(normalizedBrief?.scenes) ? normalizedBrief.scenes.length : null,
+    stageOutputs,
+  };
+}
+
+function logProviderRouteDecision(
+  stage: RunEngineStage,
+  providerMode: "fixture" | "live",
+  selectedRoute: "fixture" | "live",
+  trigger: "provider_mode_fixture" | "fixture_mode_payload" | "live_mode",
+  payload: unknown,
+): void {
+  console.log("[worker] stage route", {
+    stage,
+    providerMode,
+    selectedRoute,
+    trigger,
+    ...summarizePayloadForLogs(payload),
+  });
 }
 
 function composeProviderStageHandler(
@@ -203,12 +233,18 @@ function composeProviderStageHandler(
   fixtureHandler: StageHandler,
   liveHandler: StageHandler,
 ): StageHandler {
-  if (providerMode === "fixture") {
-    return fixtureHandler;
-  }
-
   return async (context) => {
-    if (isFixtureModePayload(context.payload)) {
+    const decision = resolveRouteDecision(providerMode, context.payload);
+
+    logProviderRouteDecision(
+      context.stage,
+      providerMode,
+      decision.selectedRoute,
+      decision.trigger,
+      context.payload,
+    );
+
+    if (decision.selectedRoute === "fixture") {
       return await fixtureHandler(context);
     }
 
@@ -234,6 +270,8 @@ function failFastOnInvalidBootstrap(): void {
     VERTEX_PROJECT: configuration.vertexProject,
     VERTEX_LOCATION: configuration.vertexLocation,
     VERTEX_API_VERSION: configuration.vertexApiVersion,
+    VERTEX_VIDEO_MODEL: configuration.vertexVideoModel,
+    VERTEX_API_KEY: configuration.vertexApiKey,
     OPENAI_API_KEY: configuration.openaiApiKey,
     GOOGLE_APPLICATION_CREDENTIALS: configuration.googleApplicationCredentials,
   });
@@ -242,8 +280,12 @@ function failFastOnInvalidBootstrap(): void {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
+  await resolveGoogleCredentials();
+
   failFastOnInvalidBootstrap();
   const configuration = loadBootstrapEnvironment(process.env);
+  await prepareBootstrapStorage(configuration);
 
   if (configuration.googleApplicationCredentials) {
     process.env.GOOGLE_APPLICATION_CREDENTIALS = configuration.googleApplicationCredentials;
@@ -278,15 +320,9 @@ async function main(): Promise<void> {
     model: "gpt-5.4-mini",
   });
 
-  const liveImageStage = createGeminiImageStageHandler({
-    client: createVertexGeminiFlashImageClient({
-      project: configuration.vertexProject ?? "",
-      location: configuration.vertexLocation ?? "",
-      apiVersion: configuration.vertexApiVersion,
-      outputRootDir: configuration.artifactsDir,
-    }),
-    model: "gemini-2.5-flash-image",
-    approvedAssetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+  const livePreGeneratedImageStage = createPreGeneratedImageStageHandler({
+    assetsRootDir: path.resolve(process.cwd(), "public/assets/approved"),
+    model: "pre_generated_assets",
   });
 
   const liveVideoStage = createVeoVideoStageHandler({
@@ -296,7 +332,20 @@ async function main(): Promise<void> {
       apiVersion: configuration.vertexApiVersion,
       outputRootDir: configuration.artifactsDir,
     }),
-    model: "veo-3.1-generate-preview",
+    model: configuration.vertexVideoModel,
+  });
+
+  const fixtureSubtitlesExportStage = createSubtitlesExportStageHandler({
+    artifactsRootDir: configuration.artifactsDir,
+    fixtureMode: true,
+    commandRunner: createFixtureMediaCommandRunner(),
+    routeSigningSecret: artifactRouteSigningSecret,
+  });
+
+  const liveSubtitlesExportStage = createSubtitlesExportStageHandler({
+    artifactsRootDir: configuration.artifactsDir,
+    fixtureMode: false,
+    routeSigningSecret: artifactRouteSigningSecret,
   });
 
   const handlers = createStageHandlers({
@@ -309,19 +358,18 @@ async function main(): Promise<void> {
     imageGeneration: composeProviderStageHandler(
       configuration.providerMode,
       fixtureImageStage,
-      liveImageStage,
+      livePreGeneratedImageStage,
     ),
     videoGeneration: composeProviderStageHandler(
       configuration.providerMode,
       fixtureVideoStage,
       liveVideoStage,
     ),
-    subtitlesExport: createSubtitlesExportStageHandler({
-      artifactsRootDir: configuration.artifactsDir,
-      fixtureMode: configuration.nodeEnv !== "production",
-      commandRunner: configuration.nodeEnv === "production" ? undefined : createFixtureMediaCommandRunner(),
-      routeSigningSecret: artifactRouteSigningSecret,
-    }),
+    subtitlesExport: composeProviderStageHandler(
+      configuration.providerMode,
+      fixtureSubtitlesExportStage,
+      liveSubtitlesExportStage,
+    ),
   });
   const runEngine = await createSQLiteRunEngine({
     sqlitePath: configuration.sqlitePath,
@@ -375,4 +423,16 @@ async function main(): Promise<void> {
   }
 }
 
-void main();
+void main().catch((error) => {
+  if (error instanceof Error) {
+    console.error("[worker] fatal startup/process failure", {
+      name: error.name,
+      message: error.message,
+      stack: error.stack,
+    });
+  } else {
+    console.error("[worker] fatal startup/process failure", { error });
+  }
+
+  process.exit(1);
+});

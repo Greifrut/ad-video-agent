@@ -5,6 +5,11 @@ export type LockedRunStatusPayload = {
   phase: RunPhase;
   outcome: RunOutcome;
   errorCode?: string;
+  errorMessage?: string;
+  failureType?: string;
+  providerReason?: string;
+  providerReasonCode?: string;
+  sceneId?: string;
   normalizedBrief?: unknown;
   selectedAssetIds?: string[];
   resultUrl?: string;
@@ -13,6 +18,14 @@ export type LockedRunStatusPayload = {
 
 type StageOutputEventPayload = {
   stage_output?: Record<string, unknown>;
+};
+
+type FailureDetails = {
+  errorMessage?: string;
+  failureType?: string;
+  providerReason?: string;
+  providerReasonCode?: string;
+  sceneId?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -132,6 +145,58 @@ function extractArtifactUrls(projection: RunProjection): { resultUrl?: string; p
   };
 }
 
+function readFailureDetails(candidate: unknown): FailureDetails {
+  if (!isRecord(candidate)) {
+    return {};
+  }
+
+  return {
+    errorMessage: typeof candidate.reason === "string" ? candidate.reason : undefined,
+    failureType: typeof candidate.failure_type === "string" ? candidate.failure_type : undefined,
+    providerReason: typeof candidate.provider_reason === "string" ? candidate.provider_reason : undefined,
+    providerReasonCode:
+      typeof candidate.provider_reason_code === "string"
+        ? candidate.provider_reason_code
+        : undefined,
+    sceneId: typeof candidate.scene_id === "string" ? candidate.scene_id : undefined,
+  };
+}
+
+function extractFailureDetails(projection: RunProjection): FailureDetails {
+  if (projection.result) {
+    const resultDetails = readFailureDetails(projection.result);
+    if (
+      resultDetails.errorMessage ||
+      resultDetails.failureType ||
+      resultDetails.providerReason ||
+      resultDetails.providerReasonCode ||
+      resultDetails.sceneId
+    ) {
+      return resultDetails;
+    }
+  }
+
+  for (let index = projection.events.length - 1; index >= 0; index -= 1) {
+    const event = projection.events[index];
+    if (event.eventType !== "job_failed") {
+      continue;
+    }
+
+    const eventDetails = readFailureDetails(event.payload);
+    if (
+      eventDetails.errorMessage ||
+      eventDetails.failureType ||
+      eventDetails.providerReason ||
+      eventDetails.providerReasonCode ||
+      eventDetails.sceneId
+    ) {
+      return eventDetails;
+    }
+  }
+
+  return {};
+}
+
 export function serializeRunStatus(projection: RunProjection): LockedRunStatusPayload {
   const status: LockedRunStatusPayload = {
     runId: projection.runId,
@@ -160,6 +225,23 @@ export function serializeRunStatus(projection: RunProjection): LockedRunStatusPa
   if (projection.outcome !== "none" && projection.outcome !== "ok") {
     const reasonCode = pickReasonCodeFromResult(projection.result);
     status.errorCode = reasonCode ?? projection.outcome;
+
+    const failureDetails = extractFailureDetails(projection);
+    if (failureDetails.errorMessage) {
+      status.errorMessage = failureDetails.errorMessage;
+    }
+    if (failureDetails.failureType) {
+      status.failureType = failureDetails.failureType;
+    }
+    if (failureDetails.providerReason) {
+      status.providerReason = failureDetails.providerReason;
+    }
+    if (failureDetails.providerReasonCode) {
+      status.providerReasonCode = failureDetails.providerReasonCode;
+    }
+    if (failureDetails.sceneId) {
+      status.sceneId = failureDetails.sceneId;
+    }
   }
 
   return status;

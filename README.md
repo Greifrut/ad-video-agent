@@ -55,12 +55,12 @@ I also treated fixture mode as the primary reviewer path from early on. The goal
 
 The package is architected around these AI tools and prompt contracts:
 
-- OpenAI Responses API with GPT-5.4 mini for brief normalization.
-- Vertex AI Gemini 2.5 Flash Image for approved-asset-derived scene stills.
-- Vertex AI Veo 3.1 for image-to-video scene animation.
+- OpenAI Responses API with GPT-5.4 mini for script normalization.
+- Pre-generated local scene assets stored under `public/assets/approved/` for still selection.
+- Vertex AI Veo 3.1 Lite for image-to-video scene animation.
 - `ffmpeg` and `ffprobe` for export assembly, subtitle burn-in, and media probing.
 
-The runtime supports both deterministic fixture mode and live provider mode. Fixture mode remains the default reviewer-safe path, while live mode wires real OpenAI Responses API + Vertex AI Gemini/Veo adapters behind explicit server-only environment configuration.
+The runtime supports both deterministic fixture mode and live provider mode. Fixture mode remains the default reviewer-safe path, while live mode wires real OpenAI Responses API + predefined local scene assets + Vertex AI Veo adapters behind explicit server-only environment configuration.
 
 ## How AI accelerated the work
 
@@ -102,6 +102,7 @@ All runtime variables in this project are server-only. Do not expose them as `NE
 | `VERTEX_LOCATION` | required when `AI_PROVIDER_MODE=live` | yes | Vertex region (for example `us-central1`). |
 | `VERTEX_API_VERSION` | optional | yes | Vertex API version for `@google/genai` (defaults to `v1`). |
 | `GOOGLE_APPLICATION_CREDENTIALS` | optional | yes | Absolute path to a service-account JSON key file. If omitted, runtime uses ADC. |
+| `GOOGLE_APPLICATION_CREDENTIALS_JSON` | optional | yes | Inline service-account JSON. Useful on Railway; startup writes it to `/tmp` and sets `GOOGLE_APPLICATION_CREDENTIALS`. |
 | `PORT` | optional | yes | Used by the web process. Defaults to platform behavior, `3000` inside the container. |
 
 There are currently no required client-side environment variables.

@@ -1,6 +1,11 @@
+import { loadLocalEnv } from "./load-local-env";
+import { resolveGoogleCredentials } from "./resolve-google-credentials";
 import { runEngineCheck } from "../packages/shared/src/index";
 
 async function main(): Promise<void> {
+  loadLocalEnv();
+  await resolveGoogleCredentials();
+
   const result = await runEngineCheck(process.env);
 
   for (const check of result.checks) {

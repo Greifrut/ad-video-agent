@@ -141,6 +141,43 @@ function toObjectPayload(payload: unknown): Record<string, unknown> {
   };
 }
 
+function summarizePayloadForLogs(payload: unknown): Record<string, unknown> {
+  const payloadObject = toObjectPayload(payload);
+  const normalizedBrief =
+    payloadObject.normalized_brief &&
+    typeof payloadObject.normalized_brief === "object" &&
+    !Array.isArray(payloadObject.normalized_brief)
+      ? (payloadObject.normalized_brief as Record<string, unknown>)
+      : null;
+  const stageOutputs =
+    payloadObject.stage_outputs &&
+    typeof payloadObject.stage_outputs === "object" &&
+    !Array.isArray(payloadObject.stage_outputs)
+      ? Object.keys(payloadObject.stage_outputs as Record<string, unknown>)
+      : [];
+  const validatePolicyOutput =
+    payloadObject.stage_outputs &&
+    typeof payloadObject.stage_outputs === "object" &&
+    !Array.isArray(payloadObject.stage_outputs) &&
+    (payloadObject.stage_outputs as Record<string, unknown>).validate_policy &&
+    typeof (payloadObject.stage_outputs as Record<string, unknown>).validate_policy === "object" &&
+    !Array.isArray((payloadObject.stage_outputs as Record<string, unknown>).validate_policy)
+      ? ((payloadObject.stage_outputs as Record<string, unknown>).validate_policy as Record<string, unknown>)
+      : null;
+  const selectedAssetIds = Array.isArray(validatePolicyOutput?.selected_asset_ids)
+    ? validatePolicyOutput.selected_asset_ids.filter((value): value is string => typeof value === "string")
+    : [];
+
+  return {
+    fixtureModeRequested: payloadObject.fixture_mode === true,
+    hasBrief: typeof payloadObject.brief === "string",
+    hasNormalizedBrief: normalizedBrief !== null,
+    normalizedSceneCount: Array.isArray(normalizedBrief?.scenes) ? normalizedBrief.scenes.length : null,
+    stageOutputs,
+    selectedAssetIdsCount: selectedAssetIds.length,
+  };
+}
+
 function mergeStageDataIntoPayload(
   payload: unknown,
   stage: RunEngineStage,
@@ -469,6 +506,10 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
           [stableJson(completedResult), now, claim.runId],
         );
         await appendEvent(claim.runId, "run_completed", "completed", "ok", completedResult, now);
+        console.log("[run-engine] run completed", {
+          runId: claim.runId,
+          finalStage: claim.stage,
+        });
         return;
       }
 
@@ -487,6 +528,11 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
         },
         now,
       );
+      console.log("[run-engine] enqueued next stage", {
+        runId: claim.runId,
+        completedStage: claim.stage,
+        nextStage: next,
+      });
     });
   }
 
@@ -547,6 +593,16 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
           provider_ref: providerRef ?? null,
           ...details,
         });
+        console.error("[run-engine] retries exhausted", {
+          runId: claim.runId,
+          jobId: claim.jobId,
+          stage: claim.stage,
+          attemptCount: currentJob.attempt_count,
+          maxAttempts: currentJob.max_attempts,
+          reason,
+          providerRef: providerRef ?? null,
+          details,
+        });
         return;
       }
 
@@ -580,6 +636,17 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
         },
         now,
       );
+      console.warn("[run-engine] retry scheduled", {
+        runId: claim.runId,
+        jobId: claim.jobId,
+        stage: claim.stage,
+        attemptCount: currentJob.attempt_count,
+        maxAttempts: currentJob.max_attempts,
+        reason,
+        providerRef: providerRef ?? null,
+        retryAt,
+        details,
+      });
     });
   }
 
@@ -667,6 +734,14 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
         },
         now,
       );
+      console.warn("[run-engine] run terminated", {
+        runId: claim.runId,
+        jobId: claim.jobId,
+        stage: claim.stage,
+        outcome: result.outcome,
+        reason: result.reason,
+        providerRef: result.providerRef ?? null,
+      });
     });
   }
 
@@ -978,74 +1053,157 @@ export async function createSQLiteRunEngine(configuration: RunEngineConfig): Pro
 
       const payload = JSON.parse(run.working_payload ?? run.input_payload) as unknown;
       const stageHandler = handlers[claim.stage];
+      const payloadSummary = summarizePayloadForLogs(payload);
 
-      const result = await stageHandler({
+      console.log("[run-engine] processing claim", {
         runId: claim.runId,
+        jobId: claim.jobId,
         stage: claim.stage,
         attemptCount: claim.attemptCount,
-        payload,
+        maxAttempts: claim.maxAttempts,
+        ...payloadSummary,
       });
 
+      const persistFatalError = async (
+        reason: string,
+        providerRef?: string,
+        details?: Record<string, unknown>,
+      ) => {
+        const now = toIsoTimestamp();
+        await withTransaction(async () => {
+          await client.run(
+            `UPDATE provider_jobs
+                SET status = 'failed',
+                    lease_token = NULL,
+                    lease_expires_at = NULL,
+                    last_error = ?,
+                    response_hash = ?,
+                    provider_ref = COALESCE(?, provider_ref),
+                    updated_at = ?
+              WHERE job_id = ?
+                AND lease_token = ?`,
+            [
+              reason,
+              hashResponsePayload({ reason, ...(details ?? {}) }),
+              providerRef ?? null,
+              now,
+              claim.jobId,
+              claim.leaseToken,
+            ],
+          );
+          await appendEvent(
+            claim.runId,
+            "job_failed",
+            "failed",
+            "provider_failed",
+            {
+              job_id: claim.jobId,
+              stage: claim.stage,
+              reason,
+              provider_ref: providerRef ?? null,
+              fatal: true,
+              ...(details ?? {}),
+            },
+            now,
+          );
+          await failRun(claim.runId, reason, now, {
+            stage: claim.stage,
+            job_id: claim.jobId,
+            provider_ref: providerRef ?? null,
+            fatal: true,
+            ...(details ?? {}),
+          });
+        });
+      };
+
+      let result: Awaited<ReturnType<typeof stageHandler>>;
+      try {
+        result = await stageHandler({
+          runId: claim.runId,
+          stage: claim.stage,
+          attemptCount: claim.attemptCount,
+          payload,
+        });
+      } catch (error) {
+        const stageError =
+          error instanceof Error ? error : new Error(String(error));
+        const reason = `unexpected ${claim.stage} stage exception: ${stageError.message}`;
+
+        console.error("[run-engine] stage handler exception", {
+          runId: claim.runId,
+          jobId: claim.jobId,
+          stage: claim.stage,
+          attemptCount: claim.attemptCount,
+          reason,
+          errorName: stageError.name,
+          stack: stageError.stack,
+          ...payloadSummary,
+        });
+
+        await persistFatalError(reason, undefined, {
+          error_name: stageError.name,
+        });
+        return;
+      }
+
       if (result.type === "success") {
+        console.log("[run-engine] stage handler success", {
+          runId: claim.runId,
+          jobId: claim.jobId,
+          stage: claim.stage,
+          attemptCount: claim.attemptCount,
+          providerRef: result.providerRef ?? null,
+        });
         await markJobSucceeded(claim, result);
         return;
       }
 
       if (result.type === "terminal_outcome") {
+        console.warn("[run-engine] stage terminal outcome", {
+          runId: claim.runId,
+          jobId: claim.jobId,
+          stage: claim.stage,
+          attemptCount: claim.attemptCount,
+          outcome: result.outcome,
+          reason: result.reason,
+          providerRef: result.providerRef ?? null,
+          ...payloadSummary,
+        });
         await markTerminalOutcome(claim, result);
         return;
       }
 
       if (result.type === "retryable_error") {
+        console.warn("[run-engine] stage retryable error", {
+          runId: claim.runId,
+          jobId: claim.jobId,
+          stage: claim.stage,
+          attemptCount: claim.attemptCount,
+          reason: result.reason,
+          providerRef: result.providerRef ?? null,
+          details: result.details ?? {},
+          ...payloadSummary,
+        });
         await scheduleRetry(claim, result.reason, result.providerRef, result.details ?? {});
         return;
       }
 
-      const now = toIsoTimestamp();
-      await withTransaction(async () => {
-        await client.run(
-          `UPDATE provider_jobs
-              SET status = 'failed',
-                  lease_token = NULL,
-                  lease_expires_at = NULL,
-                  last_error = ?,
-                  response_hash = ?,
-                  provider_ref = COALESCE(?, provider_ref),
-                  updated_at = ?
-            WHERE job_id = ?
-              AND lease_token = ?`,
-          [
-            result.reason,
-            hashResponsePayload({ reason: result.reason, ...(result.details ?? {}) }),
-            result.providerRef ?? null,
-            now,
-            claim.jobId,
-            claim.leaseToken,
-          ],
-        );
-        await appendEvent(
-          claim.runId,
-          "job_failed",
-          "failed",
-          "provider_failed",
-          {
-            job_id: claim.jobId,
-            stage: claim.stage,
-            reason: result.reason,
-            provider_ref: result.providerRef ?? null,
-            fatal: true,
-            ...(result.details ?? {}),
-          },
-          now,
-        );
-        await failRun(claim.runId, result.reason, now, {
-          stage: claim.stage,
-          job_id: claim.jobId,
-          provider_ref: result.providerRef ?? null,
-          fatal: true,
-          ...(result.details ?? {}),
-        });
+      console.error("[run-engine] stage fatal error", {
+        runId: claim.runId,
+        jobId: claim.jobId,
+        stage: claim.stage,
+        attemptCount: claim.attemptCount,
+        reason: result.reason,
+        providerRef: result.providerRef ?? null,
+        details: result.details ?? {},
+        ...payloadSummary,
       });
+
+      await persistFatalError(
+        result.reason,
+        result.providerRef,
+        result.details ?? {},
+      );
     },
 
     getRunProjection: async (runId) => {

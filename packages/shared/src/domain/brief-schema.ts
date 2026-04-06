@@ -15,7 +15,7 @@ import {
 
 export const BRIEF_SCHEMA_VERSION = SHARED_CONTRACT_VERSION;
 
-const ASPECT_RATIOS = ["16:9", "9:16", "1:1"] as const;
+const ASPECT_RATIOS = ["16:9", "9:16", "4:9", "1:1"] as const;
 const LANGUAGES = ["en"] as const;
 
 type AspectRatio = (typeof ASPECT_RATIOS)[number];
@@ -98,7 +98,7 @@ function validateScene(scene: unknown): scene is NormalizedScene {
     typeof scene.durationSeconds === "number" &&
     Number.isFinite(scene.durationSeconds) &&
     scene.durationSeconds > 0 &&
-    scene.durationSeconds <= 20
+      scene.durationSeconds <= 10
   );
 }
 

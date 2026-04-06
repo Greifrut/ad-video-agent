@@ -1,6 +1,4 @@
-import fs from "node:fs/promises";
-import path from "node:path";
-import { createSQLiteRunEngine, loadBootstrapEnvironment } from "@shared/index";
+import { createSQLiteRunEngine, loadBootstrapEnvironment, prepareBootstrapStorage } from "@shared/index";
 
 type SQLiteRunEngine = Awaited<ReturnType<typeof createSQLiteRunEngine>>;
 
@@ -11,8 +9,7 @@ export async function getRunEngine(): Promise<SQLiteRunEngine> {
   const bootstrap = loadBootstrapEnvironment(process.env);
   const sqlitePath = bootstrap.sqlitePath;
 
-  await fs.mkdir(path.dirname(sqlitePath), { recursive: true });
-  await fs.mkdir(bootstrap.artifactsDir, { recursive: true });
+  await prepareBootstrapStorage(bootstrap);
 
   if (!enginePromise) {
     enginePath = sqlitePath;

@@ -2,7 +2,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import sqlite3 from "sqlite3";
-import { createMockStageHandlers, createSQLiteRunEngine } from "@shared/index";
+import {
+  createMockStageHandlers,
+  createSQLiteRunEngine,
+  createStageHandlers,
+  type StageHandler,
+} from "@shared/index";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -264,6 +269,48 @@ describe("sqlite-run-engine", () => {
     await expect(engine.getRunProjection(started.runId)).rejects.toThrow("event chain invalid");
     const digestCheck = await engine.verifyRunEventChain(started.runId);
     expect(digestCheck.valid).toBe(false);
+
+    await engine.close();
+  });
+
+  test("marks the run failed when a stage handler throws", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "deal-pump-run-engine-"));
+    const sqlitePath = path.join(tempRoot, "deal-pump.sqlite");
+    const engine = await createSQLiteRunEngine({
+      sqlitePath,
+      leaseDurationMs: 250,
+      retryBackoffBaseMs: 10,
+    });
+    await engine.initialize();
+
+    const explodingNormalize: StageHandler = async () => {
+      throw new Error("normalize exploded");
+    };
+
+    const handlers = createStageHandlers({
+      normalize: explodingNormalize,
+    });
+
+    const started = await engine.startRun({
+      idempotencyKey: "stage-throws",
+      payload: { brief_id: "fixture-stage-throws" },
+    });
+
+    const claim = await engine.claimNextJob();
+    expect(claim?.stage).toBe("normalize");
+
+    if (!claim) {
+      throw new Error("Expected normalize claim for thrown stage test.");
+    }
+
+    await expect(engine.processClaim(claim, handlers)).resolves.toBeUndefined();
+
+    const projection = await engine.getRunProjection(started.runId);
+    expect(projection.phase).toBe("failed");
+    expect(projection.outcome).toBe("provider_failed");
+    expect(String(projection.result?.reason)).toContain(
+      "unexpected normalize stage exception: normalize exploded",
+    );
 
     await engine.close();
   });

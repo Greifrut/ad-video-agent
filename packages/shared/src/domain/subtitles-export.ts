@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { computeArtifactRouteSignature, resolveArtifactRouteSigningSecret } from "./artifact-signing";
 import { parseNormalizedBrief } from "./brief-schema";
 import {
@@ -12,17 +13,17 @@ import {
   VEO_IMAGE_TO_VIDEO_PROMPT_ID,
 } from "./prompt-registry";
 
-const SUBTITLES_EXPORT_PROMPT_ID = "render_scene_copy_subtitles_v1" as const;
-const SUBTITLES_EXPORT_PROMPT_VERSION = 1 as const;
-const SUBTITLES_EXPORT_TEMPLATE_HASH = "fd6f51d8263bf9066f5d6930352e05f8f328b466b5d11fd58519857c0faeab4f";
+const AUDIO_EXPORT_PROMPT_ID = "assemble_scene_audio_export_v1" as const;
+const AUDIO_EXPORT_PROMPT_VERSION = 1 as const;
+const AUDIO_EXPORT_TEMPLATE_HASH = "634bbd5413b4c1a2298d61be10fc0cf4659f7a8ef7f3cb9144bc34b7dd66f985";
 
-const EXPORT_WIDTH = 1280;
-const EXPORT_HEIGHT = 720;
+const EXPORT_WIDTH = 1080;
+const EXPORT_HEIGHT = 2430;
 const EXPORT_FPS = 24;
 const EXPORT_CODEC = "h264";
-const EXPORT_MAX_DURATION_SECONDS = 30;
+const EXPORT_MAX_DURATION_SECONDS = 10;
 const SIGNED_ROUTE_TTL_SECONDS = 24 * 60 * 60;
-const MAX_SUBTITLE_LINE_CHARS = 42;
+const require = createRequire(import.meta.url);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -55,80 +56,8 @@ function parseFps(value: string | undefined): number | null {
   return numerator / denominator;
 }
 
-function formatSrtTimestamp(seconds: number): string {
-  const clamped = Math.max(0, seconds);
-  const hours = Math.floor(clamped / 3600);
-  const minutes = Math.floor((clamped % 3600) / 60);
-  const secs = Math.floor(clamped % 60);
-  const milliseconds = Math.floor((clamped - Math.floor(clamped)) * 1000);
-
-  const hh = String(hours).padStart(2, "0");
-  const mm = String(minutes).padStart(2, "0");
-  const ss = String(secs).padStart(2, "0");
-  const mmm = String(milliseconds).padStart(3, "0");
-  return `${hh}:${mm}:${ss},${mmm}`;
-}
-
-function normalizeSubtitleText(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function wrapSubtitleText(input: string): string[] {
-  const text = normalizeSubtitleText(input);
-  if (!text) {
-    return [""];
-  }
-
-  const words = text.split(" ");
-  const lines: string[] = [];
-  let current = "";
-
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word;
-    if (candidate.length <= MAX_SUBTITLE_LINE_CHARS) {
-      current = candidate;
-      continue;
-    }
-
-    if (current.length > 0) {
-      lines.push(current);
-      current = word;
-    } else {
-      lines.push(word.slice(0, MAX_SUBTITLE_LINE_CHARS));
-      current = word.slice(MAX_SUBTITLE_LINE_CHARS);
-    }
-
-    if (lines.length === 2) {
-      break;
-    }
-  }
-
-  if (lines.length < 2 && current.length > 0) {
-    lines.push(current);
-  }
-
-  if (lines.length > 2) {
-    const truncated = lines.slice(0, 2);
-    const second = truncated[1] ?? "";
-    truncated[1] = second.length >= MAX_SUBTITLE_LINE_CHARS - 1
-      ? `${second.slice(0, MAX_SUBTITLE_LINE_CHARS - 1)}…`
-      : `${second}…`;
-    return truncated;
-  }
-
-  return lines.slice(0, 2);
-}
-
 function escapeForConcatList(filePath: string): string {
   return filePath.replace(/'/g, "'\\''");
-}
-
-function escapeForSubtitleFilter(filePath: string): string {
-  return filePath
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/,/g, "\\,")
-    .replace(/'/g, "\\'");
 }
 
 async function hashFileSha256(filePath: string): Promise<string> {
@@ -142,12 +71,65 @@ type CommandResult = {
   stderr: string;
 };
 
-export type MediaCommandRunner = (command: "ffprobe" | "ffmpeg", args: string[]) => Promise<CommandResult>;
+type MediaBinaryName = "ffprobe" | "ffmpeg";
+
+type InstallerBinaryModule = {
+  path?: string;
+};
+
+export type MediaCommandRunner = (command: MediaBinaryName, args: string[]) => Promise<CommandResult>;
+
+function readBundledBinaryPath(command: MediaBinaryName): string | null {
+  try {
+    const installer = require(
+      command === "ffmpeg"
+        ? "@ffmpeg-installer/ffmpeg"
+        : "@ffprobe-installer/ffprobe",
+    ) as InstallerBinaryModule;
+
+    return typeof installer.path === "string" && installer.path.length > 0
+      ? installer.path
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveMediaBinary(command: MediaBinaryName): Promise<string> {
+  const envOverride =
+    command === "ffmpeg" ? process.env.FFMPEG_BIN : process.env.FFPROBE_BIN;
+  const candidate =
+    envOverride?.trim() || readBundledBinaryPath(command) || command;
+
+  if (path.isAbsolute(candidate)) {
+    try {
+      await fs.chmod(candidate, 0o755);
+    } catch {
+      // Best-effort only. Spawn will still surface the concrete failure.
+    }
+  }
+
+  return candidate;
+}
 
 function createDefaultMediaCommandRunner(): MediaCommandRunner {
+  const resolvedCommands = new Map<MediaBinaryName, Promise<string>>();
+
+  function getResolvedCommand(command: MediaBinaryName): Promise<string> {
+    let resolved = resolvedCommands.get(command);
+    if (!resolved) {
+      resolved = resolveMediaBinary(command);
+      resolvedCommands.set(command, resolved);
+    }
+
+    return resolved;
+  }
+
   return async (command, args) => {
+    const resolvedCommand = await getResolvedCommand(command);
+
     return await new Promise((resolve) => {
-      const child = spawn(command, args, {
+      const child = spawn(resolvedCommand, args, {
         stdio: ["ignore", "pipe", "pipe"],
       });
 
@@ -207,6 +189,7 @@ type ValidatedClip = {
   clip_id: string;
   file_path: string;
   duration_seconds: number;
+  has_audio: boolean;
   sha256: string;
   source_asset_ids: string[];
 };
@@ -291,9 +274,9 @@ function getPromptMetadataForProvenance(payload: unknown): Record<string, unknow
     image_generation: imageMetadata ?? toPrompt(imagePrompt),
     video_generation: videoMetadata ?? toPrompt(videoPrompt),
     subtitles_export: {
-      prompt_id: SUBTITLES_EXPORT_PROMPT_ID,
-      version: SUBTITLES_EXPORT_PROMPT_VERSION,
-      template_hash: SUBTITLES_EXPORT_TEMPLATE_HASH,
+      prompt_id: AUDIO_EXPORT_PROMPT_ID,
+      version: AUDIO_EXPORT_PROMPT_VERSION,
+      template_hash: AUDIO_EXPORT_TEMPLATE_HASH,
     },
   };
 }
@@ -418,6 +401,11 @@ function getPrimaryVideoStream(probe: ProbeResult): ProbeStream | null {
   return streams.find((stream) => stream.codec_type === "video") ?? null;
 }
 
+function getPrimaryAudioStream(probe: ProbeResult): ProbeStream | null {
+  const streams = Array.isArray(probe.streams) ? probe.streams : [];
+  return streams.find((stream) => stream.codec_type === "audio") ?? null;
+}
+
 function readDurationSeconds(probe: ProbeResult, videoStream: ProbeStream): number {
   const streamDuration = Number.parseFloat(videoStream.duration ?? "");
   if (Number.isFinite(streamDuration) && streamDuration > 0) {
@@ -440,38 +428,6 @@ function isFixtureMode(payload: unknown, fallbackFixtureMode: boolean): boolean 
   return fallbackFixtureMode;
 }
 
-function buildSubtitleSrt(
-  narratives: Array<{ duration_seconds: number; text: string }>,
-): string {
-  const lines: string[] = [];
-  let cursor = 0;
-  let sequence = 1;
-
-  for (const item of narratives) {
-    if (cursor >= EXPORT_MAX_DURATION_SECONDS) {
-      break;
-    }
-
-    const duration = Math.max(0.4, Math.min(item.duration_seconds, EXPORT_MAX_DURATION_SECONDS - cursor));
-    const end = Math.min(EXPORT_MAX_DURATION_SECONDS, cursor + duration);
-    const wrapped = wrapSubtitleText(item.text);
-    if (wrapped.join("").trim().length === 0) {
-      cursor = end;
-      continue;
-    }
-
-    lines.push(String(sequence));
-    lines.push(`${formatSrtTimestamp(cursor)} --> ${formatSrtTimestamp(end)}`);
-    lines.push(...wrapped);
-    lines.push("");
-
-    sequence += 1;
-    cursor = end;
-  }
-
-  return `${lines.join("\n")}\n`;
-}
-
 export type SubtitlesExportGeneratorOptions = {
   artifactsRootDir: string;
   tempRootDir?: string;
@@ -486,17 +442,18 @@ type SubtitlesExportGeneratorSuccess = {
   stageData: {
     subtitles_export: {
       export_spec: {
-        width: 1280;
-        height: 720;
+        width: 1080;
+        height: 2430;
         fps: 24;
         codec: "h264";
         container: "mp4";
-        max_duration_seconds: 30;
-        soundtrack: "none";
+        max_duration_seconds: 10;
+        soundtrack: "provider_audio" | "mixed_audio" | "silent";
       };
       export_metadata: {
         duration_seconds: number;
         subtitle_entries: number;
+        audio_segments: number;
         fixture_mode: boolean;
       };
       artifact_routes: {
@@ -533,7 +490,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
       if (!parsedBrief.ok) {
         return {
           outcome: "needs_clarification",
-          reason: "normalized brief schema validation failed before subtitles_export",
+          reason: "normalized brief schema validation failed before export stage",
         };
       }
 
@@ -549,7 +506,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
       if (clipInputs.length === 0 && !fixtureMode) {
         return {
           outcome: "provider_failed",
-          reason: "subtitles_export requires video_generation clip metadata unless fixture mode is enabled",
+          reason: "export stage requires video_generation clip metadata unless fixture mode is enabled",
         };
       }
 
@@ -662,6 +619,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
           clip_id: clip.clip_id,
           file_path: localPath,
           duration_seconds: durationSeconds,
+          has_audio: getPrimaryAudioStream(probe) !== null,
           sha256: clip.sha256,
           source_asset_ids: clip.source_asset_ids,
         });
@@ -675,6 +633,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
       }
 
       const normalizedPaths: string[] = [];
+      const exportedClips: ValidatedClip[] = [];
       let remainingDuration = EXPORT_MAX_DURATION_SECONDS;
       for (let index = 0; index < validatedClips.length; index += 1) {
         if (remainingDuration <= 0) {
@@ -684,25 +643,69 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         const clip = validatedClips[index];
         const normalizedDuration = Math.min(clip.duration_seconds, remainingDuration);
         const normalizedPath = path.join(normalizedDir, `clip-${String(index + 1).padStart(2, "0")}.mp4`);
-        const normalizeResult = await commandRunner("ffmpeg", [
-          "-y",
-          "-i",
-          clip.file_path,
-          "-an",
-          "-vf",
-          `scale=${EXPORT_WIDTH}:${EXPORT_HEIGHT}:force_original_aspect_ratio=decrease,pad=${EXPORT_WIDTH}:${EXPORT_HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,fps=${EXPORT_FPS},format=yuv420p,setsar=1`,
-          "-c:v",
-          "libx264",
-          "-r",
-          String(EXPORT_FPS),
-          "-pix_fmt",
-          "yuv420p",
-          "-movflags",
-          "+faststart",
-          "-t",
-          normalizedDuration.toFixed(3),
-          normalizedPath,
-        ]);
+        const normalizeArgs = clip.has_audio
+          ? [
+              "-y",
+              "-i",
+              clip.file_path,
+              "-map",
+              "0:v:0",
+              "-map",
+              "0:a:0",
+              "-vf",
+              `scale=${EXPORT_WIDTH}:${EXPORT_HEIGHT}:force_original_aspect_ratio=increase,crop=${EXPORT_WIDTH}:${EXPORT_HEIGHT},fps=${EXPORT_FPS},format=yuv420p,setsar=1`,
+              "-c:v",
+              "libx264",
+              "-c:a",
+              "aac",
+              "-ar",
+              "48000",
+              "-ac",
+              "2",
+              "-r",
+              String(EXPORT_FPS),
+              "-pix_fmt",
+              "yuv420p",
+              "-movflags",
+              "+faststart",
+              "-t",
+              normalizedDuration.toFixed(3),
+              normalizedPath,
+            ]
+          : [
+              "-y",
+              "-i",
+              clip.file_path,
+              "-f",
+              "lavfi",
+              "-i",
+              "anullsrc=channel_layout=stereo:sample_rate=48000",
+              "-map",
+              "0:v:0",
+              "-map",
+              "1:a:0",
+              "-vf",
+              `scale=${EXPORT_WIDTH}:${EXPORT_HEIGHT}:force_original_aspect_ratio=increase,crop=${EXPORT_WIDTH}:${EXPORT_HEIGHT},fps=${EXPORT_FPS},format=yuv420p,setsar=1`,
+              "-c:v",
+              "libx264",
+              "-c:a",
+              "aac",
+              "-ar",
+              "48000",
+              "-ac",
+              "2",
+              "-r",
+              String(EXPORT_FPS),
+              "-pix_fmt",
+              "yuv420p",
+              "-movflags",
+              "+faststart",
+              "-shortest",
+              "-t",
+              normalizedDuration.toFixed(3),
+              normalizedPath,
+            ];
+        const normalizeResult = await commandRunner("ffmpeg", normalizeArgs);
 
         if (normalizeResult.exitCode !== 0) {
           return {
@@ -712,6 +715,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         }
 
         normalizedPaths.push(normalizedPath);
+        exportedClips.push(clip);
         remainingDuration -= normalizedDuration;
       }
 
@@ -728,7 +732,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         .join("\n");
       await fs.writeFile(concatListPath, `${concatBody}\n`, "utf8");
 
-      const assembledPath = path.join(runTempDir, "assembled.mp4");
+      const finalVideoPath = path.join(artifactsRunDir, "final.mp4");
       const concatResult = await commandRunner("ffmpeg", [
         "-y",
         "-f",
@@ -737,44 +741,14 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         "0",
         "-i",
         concatListPath,
-        "-an",
         "-c:v",
         "libx264",
-        "-r",
-        String(EXPORT_FPS),
-        "-pix_fmt",
-        "yuv420p",
-        "-movflags",
-        "+faststart",
-        assembledPath,
-      ]);
-
-      if (concatResult.exitCode !== 0) {
-        return {
-          outcome: "provider_failed",
-          reason: `clip concatenation failed: ${concatResult.stderr || concatResult.stdout}`,
-        };
-      }
-
-      const subtitleEntries = parsedBrief.value.scenes.map((scene) => {
-        return {
-          duration_seconds: scene.durationSeconds,
-          text: scene.narrative,
-        };
-      });
-      const subtitlesPath = path.join(runTempDir, "subtitles.srt");
-      await fs.writeFile(subtitlesPath, buildSubtitleSrt(subtitleEntries), "utf8");
-
-      const finalVideoPath = path.join(artifactsRunDir, "final.mp4");
-      const burnResult = await commandRunner("ffmpeg", [
-        "-y",
-        "-i",
-        assembledPath,
-        "-vf",
-        `subtitles=${escapeForSubtitleFilter(subtitlesPath)}`,
-        "-an",
-        "-c:v",
-        "libx264",
+        "-c:a",
+        "aac",
+        "-ar",
+        "48000",
+        "-ac",
+        "2",
         "-r",
         String(EXPORT_FPS),
         "-pix_fmt",
@@ -784,15 +758,16 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         finalVideoPath,
       ]);
 
-      if (burnResult.exitCode !== 0) {
+      if (concatResult.exitCode !== 0) {
         return {
           outcome: "provider_failed",
-          reason: `subtitle burn-in failed: ${burnResult.stderr || burnResult.stdout}`,
+          reason: `clip concatenation failed: ${concatResult.stderr || concatResult.stdout}`,
         };
       }
 
       const finalProbe = await probeMedia(commandRunner, finalVideoPath);
       const finalVideoStream = getPrimaryVideoStream(finalProbe);
+      const finalAudioStream = getPrimaryAudioStream(finalProbe);
       if (!finalVideoStream) {
         return {
           outcome: "provider_failed",
@@ -805,7 +780,11 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
       const fps = parseFps(finalVideoStream.avg_frame_rate ?? finalVideoStream.r_frame_rate);
       const codecName = finalVideoStream.codec_name ?? "";
       const duration = readDurationSeconds(finalProbe, finalVideoStream);
-      const hasAudio = (finalProbe.streams ?? []).some((stream) => stream.codec_type === "audio");
+      const soundtrack = exportedClips.every((clip) => clip.has_audio)
+        ? "provider_audio"
+        : exportedClips.some((clip) => clip.has_audio)
+          ? "mixed_audio"
+          : "silent";
 
       if (
         finalWidth !== EXPORT_WIDTH ||
@@ -814,7 +793,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
         Math.abs(fps - EXPORT_FPS) > 0.2 ||
         codecName !== EXPORT_CODEC ||
         duration > EXPORT_MAX_DURATION_SECONDS + 0.1 ||
-        hasAudio
+        !finalAudioStream
       ) {
         return {
           outcome: "provider_failed",
@@ -896,7 +875,7 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
           codec: EXPORT_CODEC,
           container: "mp4",
           max_duration_seconds: EXPORT_MAX_DURATION_SECONDS,
-          soundtrack: "none",
+          soundtrack,
           duration_seconds: Number(duration.toFixed(3)),
         },
       };
@@ -926,11 +905,12 @@ export function createSubtitlesExportGenerator(options: SubtitlesExportGenerator
               codec: EXPORT_CODEC,
               container: "mp4",
               max_duration_seconds: EXPORT_MAX_DURATION_SECONDS,
-              soundtrack: "none",
+              soundtrack,
             },
             export_metadata: {
               duration_seconds: Number(duration.toFixed(3)),
-              subtitle_entries: subtitleEntries.length,
+              subtitle_entries: 0,
+              audio_segments: exportedClips.length,
               fixture_mode: fixtureMode,
             },
             artifact_routes: {

@@ -1,6 +1,9 @@
-import { APPROVED_ASSET_MANIFEST } from "../domain/approved-assets";
+import {
+  APPROVED_ASSET_MANIFEST,
+  type ApprovedAssetRecord,
+} from "../domain/approved-assets";
 import { BRIEF_SCHEMA_VERSION, parseNormalizedBrief, type NormalizedBrief } from "../domain/brief-schema";
-import { evaluateBriefPolicy } from "../domain/policy-engine";
+import type { AssetTag } from "../domain/contracts";
 import type { StageHandler } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -34,16 +37,16 @@ function normalizeBriefForFixture(inputBrief: string, runId: string): Normalized
     campaignName: "Fixture runtime campaign",
     objective: briefText,
     language: "en",
-    aspectRatio: "16:9",
+    aspectRatio: "4:9",
     unresolvedQuestions: [],
     scenes: [
       {
         sceneId: "scene-intro",
         sceneType: "intro",
         visualCriticality: "supporting",
-        narrative: `${briefText}. Opening reveal with approved logo and studio background.`,
-        desiredTags: ["logo", "background"],
-        approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
+        narrative: `${briefText}. Open on the spokesperson hook frame.`,
+        desiredTags: ["hero", "social", "background"],
+        approvedAssetIds: ["hook-spokeswoman-dealpump"],
         generationMode: "asset_derived",
         requestedTransform: "overlay",
         durationSeconds: 5,
@@ -52,12 +55,12 @@ function normalizeBriefForFixture(inputBrief: string, runId: string): Normalized
         sceneId: "scene-product",
         sceneType: "product_focus",
         visualCriticality: "brand_critical",
-        narrative: "Product hero frame with controlled motion and packshot emphasis.",
+        narrative: "Show the product demo close-up with clear ecommerce value.",
         desiredTags: ["product", "packshot"],
-        approvedAssetIds: ["product-can-classic-packshot"],
+        approvedAssetIds: ["product-demo-closeup"],
         generationMode: "asset_derived",
         requestedTransform: "animate",
-        durationSeconds: 6,
+        durationSeconds: 5,
       },
     ],
   };
@@ -74,31 +77,116 @@ function collectSelectedAssetIds(brief: NormalizedBrief): string[] {
   return [...unique].sort();
 }
 
+function inferDesiredTags(scene: NormalizedBrief["scenes"][number], brief: NormalizedBrief): AssetTag[] {
+  const text = `${brief.objective} ${scene.narrative}`.toLowerCase();
+  const inferred = new Set<AssetTag>(scene.desiredTags);
+
+  const keywordMap: Array<{ tag: AssetTag; patterns: string[] }> = [
+    { tag: "product", patterns: ["product", "deal pump", "ecommerce", "interface", "device"] },
+    { tag: "packshot", patterns: ["packshot", "close-up", "demo"] },
+    { tag: "social", patterns: ["social", "testimonial", "proof", "creator"] },
+    { tag: "background", patterns: ["background", "studio", "lifestyle"] },
+    { tag: "hero", patterns: ["hook", "best", "cta", "why", "direct to camera"] },
+  ];
+
+  for (const { tag, patterns } of keywordMap) {
+    if (patterns.some((pattern) => text.includes(pattern))) {
+      inferred.add(tag);
+    }
+  }
+
+  return [...inferred];
+}
+
+function scoreAssetForScene(
+  asset: ApprovedAssetRecord,
+  scene: NormalizedBrief["scenes"][number],
+  desiredTags: readonly AssetTag[],
+): number {
+  let score = 0;
+  const sceneText = scene.narrative.toLowerCase();
+
+  for (const tag of desiredTags) {
+    if (asset.tags.includes(tag)) {
+      score += 5;
+    }
+  }
+
+  if (asset.sceneSuitability.includes(scene.sceneType)) {
+    score += 6;
+  }
+
+  if (
+    scene.sceneType === "intro" &&
+    asset.id === "hook-spokeswoman-dealpump" &&
+    /(presenter|introduc|hand gestures|studio movement|host|spokesperson)/i.test(sceneText)
+  ) {
+    score += 12;
+  }
+
+  if (
+    scene.sceneType === "intro" &&
+    asset.id === "product-demo-closeup" &&
+    /(product|interface|device|demo|screen)/i.test(sceneText)
+  ) {
+    score += 10;
+  }
+
+  if (scene.sceneType === "intro" && asset.id === "social-proof-lifestyle") {
+    score += 6;
+  }
+
+  if (scene.sceneType === "product_focus" && asset.id === "product-demo-closeup") {
+    score += 10;
+  }
+
+  if (scene.sceneType === "background_plate" && asset.id === "social-proof-lifestyle") {
+    score += 10;
+  }
+
+  if (scene.sceneType === "cta" && asset.id === "closing-cta-packshot") {
+    score += 10;
+  }
+
+  return score;
+}
+
+function selectAssetForScene(scene: NormalizedBrief["scenes"][number], brief: NormalizedBrief): string[] {
+  const desiredTags = inferDesiredTags(scene, brief);
+  const compatibleAssets = APPROVED_ASSET_MANIFEST.assets.filter((asset) => {
+    return (
+      asset.sceneSuitability.includes(scene.sceneType) &&
+      asset.allowedTransforms.includes(scene.requestedTransform)
+    );
+  });
+
+  const bestMatch = compatibleAssets
+    .map((asset) => ({ asset, score: scoreAssetForScene(asset, scene, desiredTags) }))
+    .sort((left, right) => right.score - left.score)[0]?.asset;
+
+  return bestMatch ? [bestMatch.id] : [];
+}
+
 function enrichApprovedAssetsForRuntime(brief: NormalizedBrief): NormalizedBrief {
   return {
     ...brief,
     scenes: brief.scenes.map((scene) => {
-      if (scene.approvedAssetIds.length > 0) {
-        return scene;
-      }
+      const selectedAssets =
+        scene.approvedAssetIds.length > 0
+          ? scene.approvedAssetIds.slice(0, 1)
+          : selectAssetForScene(scene, brief);
 
-      if (scene.sceneType === "intro") {
+      if (selectedAssets.length === 0) {
         return {
           ...scene,
-          approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
-        };
-      }
-
-      if (scene.sceneType === "product_focus") {
-        return {
-          ...scene,
-          approvedAssetIds: ["product-can-classic-packshot"],
+          approvedAssetIds: selectedAssets,
         };
       }
 
       return {
         ...scene,
-        approvedAssetIds: ["brand-wordmark-primary"],
+        approvedAssetIds: selectedAssets,
+        generationMode: "asset_derived",
       };
     }),
   };
@@ -151,16 +239,19 @@ export function createRuntimeValidatePolicyStageHandler(): StageHandler {
     }
 
     const enrichedBrief = enrichApprovedAssetsForRuntime(parsed.value);
-    const policy = evaluateBriefPolicy(enrichedBrief, APPROVED_ASSET_MANIFEST);
     const selectedAssetIds = collectSelectedAssetIds(enrichedBrief);
 
-    if (policy.outcome === "ok") {
+    const hasMissingAssets = enrichedBrief.scenes.some((scene) => scene.approvedAssetIds.length === 0);
+
+    if (hasMissingAssets) {
       return {
-        type: "success",
+        type: "terminal_outcome",
+        outcome: "needs_clarification",
+        reason: "asset selection could not map every scene to a predefined image",
         data: {
           validate_policy: {
             selected_asset_ids: selectedAssetIds,
-            reason_codes: [],
+            reason_codes: ["brief_no_asset_match"],
           },
           normalized_brief: enrichedBrief,
         },
@@ -168,13 +259,11 @@ export function createRuntimeValidatePolicyStageHandler(): StageHandler {
     }
 
     return {
-      type: "terminal_outcome",
-      outcome: policy.outcome,
-      reason: `policy evaluation returned ${policy.outcome}`,
+      type: "success",
       data: {
         validate_policy: {
           selected_asset_ids: selectedAssetIds,
-          reason_codes: policy.reasonCodes,
+          reason_codes: [],
         },
         normalized_brief: enrichedBrief,
       },

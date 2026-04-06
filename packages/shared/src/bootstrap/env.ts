@@ -1,3 +1,4 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import {
   DEPLOYMENT_ARTIFACTS_DIR,
@@ -14,13 +15,18 @@ export type BootstrapEnvironment = {
   ffmpegRequired: boolean;
   providerMode: "fixture" | "live";
   openaiApiKey: string | null;
+  vertexApiKey: string | null;
   vertexProject: string | null;
   vertexLocation: string | null;
   vertexApiVersion: string;
+  vertexVideoModel: string;
   googleApplicationCredentials: string | null;
 };
 
-function parseBoolean(value: string | undefined, defaultValue: boolean): boolean {
+function parseBoolean(
+  value: string | undefined,
+  defaultValue: boolean,
+): boolean {
   if (value === undefined || value.trim() === "") {
     return defaultValue;
   }
@@ -47,7 +53,8 @@ export function loadBootstrapEnvironment(
   cwd = process.cwd(),
 ): BootstrapEnvironment {
   const nodeEnv = env.NODE_ENV ?? "development";
-  const defaultDataDir = nodeEnv === "production" ? DEPLOYMENT_DATA_DIR : path.join(cwd, ".data");
+  const defaultDataDir =
+    nodeEnv === "production" ? DEPLOYMENT_DATA_DIR : path.join(cwd, ".data");
   const dataDir = env.DATA_DIR ?? defaultDataDir;
 
   return {
@@ -59,26 +66,47 @@ export function loadBootstrapEnvironment(
     ffmpegRequired: parseBoolean(env.REQUIRE_FFMPEG, nodeEnv === "production"),
     providerMode: parseProviderMode(env.AI_PROVIDER_MODE),
     openaiApiKey: readOptionalNonEmpty(env.OPENAI_API_KEY),
+    vertexApiKey: readOptionalNonEmpty(env.VERTEX_API_KEY),
     vertexProject: readOptionalNonEmpty(env.VERTEX_PROJECT),
     vertexLocation: readOptionalNonEmpty(env.VERTEX_LOCATION),
     vertexApiVersion: env.VERTEX_API_VERSION?.trim() || "v1",
-    googleApplicationCredentials: readOptionalNonEmpty(env.GOOGLE_APPLICATION_CREDENTIALS),
+    vertexVideoModel:
+      env.VERTEX_VIDEO_MODEL?.trim() || "veo-3.1-fast-generate-001",
+    googleApplicationCredentials: readOptionalNonEmpty(
+      env.GOOGLE_APPLICATION_CREDENTIALS,
+    ),
   };
 }
 
-export function validateBootstrapEnvironment(configuration: BootstrapEnvironment): string[] {
+export async function prepareBootstrapStorage(
+  configuration: BootstrapEnvironment,
+): Promise<void> {
+  await fs.mkdir(path.dirname(configuration.sqlitePath), { recursive: true });
+  await fs.mkdir(configuration.artifactsDir, { recursive: true });
+}
+
+export function validateBootstrapEnvironment(
+  configuration: BootstrapEnvironment,
+): string[] {
   const errors: string[] = [];
 
-  if (!Number.isInteger(configuration.workerConcurrency) || configuration.workerConcurrency !== 1) {
+  if (
+    !Number.isInteger(configuration.workerConcurrency) ||
+    configuration.workerConcurrency !== 1
+  ) {
     errors.push("WORKER_CONCURRENCY must be exactly 1 for SQLite safety.");
   }
 
   if (!path.isAbsolute(configuration.sqlitePath)) {
-    errors.push(`SQLITE_DB_PATH must be absolute. Received: ${configuration.sqlitePath}`);
+    errors.push(
+      `SQLITE_DB_PATH must be absolute. Received: ${configuration.sqlitePath}`,
+    );
   }
 
   if (!path.isAbsolute(configuration.artifactsDir)) {
-    errors.push(`ARTIFACTS_DIR must be absolute. Received: ${configuration.artifactsDir}`);
+    errors.push(
+      `ARTIFACTS_DIR must be absolute. Received: ${configuration.artifactsDir}`,
+    );
   }
 
   if (configuration.nodeEnv === "production") {
@@ -107,7 +135,6 @@ export function validateBootstrapEnvironment(configuration: BootstrapEnvironment
     if (!configuration.vertexLocation) {
       errors.push("VERTEX_LOCATION is required when AI_PROVIDER_MODE=live.");
     }
-
   }
 
   if (

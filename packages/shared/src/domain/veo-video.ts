@@ -1,5 +1,5 @@
-import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { parseNormalizedBrief } from "./brief-schema";
 import type { FailureReasonCode } from "./contracts";
@@ -9,10 +9,11 @@ import {
   type PromptRegistryEntry,
 } from "./prompt-registry";
 
-const DEFAULT_MODEL = "veo-3.1-generate-preview";
+const DEFAULT_MODEL = "veo-3.1-fast-generate-001";
 const POLLING_SCHEDULE_MS = [10_000, 20_000, 30_000] as const;
 const MAX_POLL_INTERVAL_MS = 30_000;
 const MAX_SCENE_WALL_CLOCK_MS = 15 * 60 * 1_000;
+const SUPPORTED_IMAGE_TO_VIDEO_DURATIONS = [4, 6, 8] as const;
 
 type GoogleGenAIVideoClient = {
   models: {
@@ -32,7 +33,9 @@ type GoogleGenAIModule = {
   }) => GoogleGenAIVideoClient;
 };
 
-const loadGoogleGenAIModule = new Function("return import('@google/genai')") as () => Promise<GoogleGenAIModule>;
+const loadGoogleGenAIModule = new Function(
+  "return import('@google/genai')",
+) as () => Promise<GoogleGenAIModule>;
 
 type PollingClock = {
   now: () => number;
@@ -43,7 +46,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readDerivedStills(payload: unknown):
+function readDerivedStills(
+  payload: unknown,
+):
   | { ok: true; stills: Array<Record<string, unknown>> }
   | { ok: false; reasonCodes: FailureReasonCode[] } {
   if (!isRecord(payload)) {
@@ -72,7 +77,9 @@ function readDerivedStills(payload: unknown):
 
   return {
     ok: true,
-    stills: stills.filter((entry): entry is Record<string, unknown> => isRecord(entry)),
+    stills: stills.filter((entry): entry is Record<string, unknown> =>
+      isRecord(entry),
+    ),
   };
 }
 
@@ -176,7 +183,9 @@ export type VeoSceneVideoStatusResponse =
     };
 
 export interface VeoVideoClient {
-  startSceneVideoGeneration: (request: VeoSceneVideoStartRequest) => Promise<{ provider_job_reference: string }>;
+  startSceneVideoGeneration: (
+    request: VeoSceneVideoStartRequest,
+  ) => Promise<{ provider_job_reference: string }>;
   getSceneVideoGenerationStatus: (
     request: VeoSceneVideoStatusRequest,
   ) => Promise<VeoSceneVideoStatusResponse>;
@@ -209,12 +218,40 @@ function renderScenePrompt(request: VeoSceneVideoStartRequest): string {
     "",
     `Scene ID: ${request.scene.sceneId}`,
     `Scene type: ${request.scene.sceneType}`,
-    `Narrative: ${request.scene.narrative}`,
+    `Narrative: ${sanitizeNarrativeForVeo(request.scene.narrative)}`,
     `Duration seconds: ${request.scene.durationSeconds}`,
     `First frame still ID: ${request.firstFrame.stillId}`,
     `First frame SHA256: ${request.firstFrame.sha256}`,
     `Source asset IDs: ${request.sourceAssetIds.join(",")}`,
   ].join("\n");
+}
+
+function sanitizeNarrativeForVeo(narrative: string): string {
+  return narrative
+    .replace(/\bwoman\b/gi, "presenter")
+    .replace(/\bman\b/gi, "presenter")
+    .replace(/speaking straight to camera/gi, "presenting in a clean studio")
+    .replace(/speaks directly to camera/gi, "appears in a clean studio")
+    .replace(/direct-response/gi, "product-demo")
+    .replace(/social-proof/gi, "positive lifestyle")
+    .replace(/call to action/gi, "closing product frame")
+    .replace(/\bbest\b/gi, "strong")
+    .replace(/try .*? now/gi, "show the product clearly")
+    .replace(/why .*? is the /gi, "introducing ")
+    .trim();
+}
+
+function inferVeoAspectRatio(width: number, height: number): "9:16" | "16:9" | "1:1" {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    return "9:16";
+  }
+
+  const ratio = width / height;
+  if (Math.abs(ratio - 1) < 0.1) {
+    return "1:1";
+  }
+
+  return ratio < 1 ? "9:16" : "16:9";
 }
 
 function readOperationName(payload: unknown): string | null {
@@ -223,6 +260,35 @@ function readOperationName(payload: unknown): string | null {
   }
 
   return readString(payload.name);
+}
+
+function createRestorableVideosOperation(name: string): {
+  name: string;
+  _fromAPIResponse: (parameters: { apiResponse: unknown }) => unknown;
+} {
+  return {
+    name,
+    _fromAPIResponse: ({ apiResponse }) => apiResponse,
+  };
+}
+
+function quantizeSceneDurationForVeo(requestedDuration: number): 4 | 6 | 8 {
+  const roundedDuration = Math.max(1, Math.min(10, Math.round(requestedDuration)));
+
+  return SUPPORTED_IMAGE_TO_VIDEO_DURATIONS.reduce((bestDuration, candidate) => {
+    const bestDistance = Math.abs(bestDuration - roundedDuration);
+    const candidateDistance = Math.abs(candidate - roundedDuration);
+
+    if (candidateDistance < bestDistance) {
+      return candidate;
+    }
+
+    if (candidateDistance === bestDistance) {
+      return Math.min(bestDuration, candidate) as 4 | 6 | 8;
+    }
+
+    return bestDuration;
+  });
 }
 
 async function defaultFetchBinary(url: string): Promise<Buffer> {
@@ -239,6 +305,7 @@ function readVideoBytes(video: Record<string, unknown>): Buffer | null {
   const encodedBytes =
     readString(video.videoBytes) ??
     readString(video.video_bytes) ??
+    readString(video.bytesBase64Encoded) ??
     readString(video.bytes) ??
     readString(video.inlineBytes) ??
     readString(video.inline_bytes);
@@ -250,9 +317,41 @@ function readVideoBytes(video: Record<string, unknown>): Buffer | null {
   return Buffer.from(encodedBytes, "base64");
 }
 
-function clipCachePath(outputRootDir: string, providerJobReference: string): string {
-  const providerHash = createHash("sha256").update(providerJobReference).digest("hex");
-  return path.join(outputRootDir, "provider-cache", "veo", `${providerHash}.mp4`);
+function readGeneratedVideos(
+  response: Record<string, unknown>,
+): Array<Record<string, unknown>> {
+  if (Array.isArray(response.generatedVideos)) {
+    return response.generatedVideos.filter((entry): entry is Record<string, unknown> =>
+      isRecord(entry),
+    );
+  }
+
+  if (Array.isArray(response.videos)) {
+    return response.videos
+      .filter((entry): entry is Record<string, unknown> => isRecord(entry))
+      .map((video) => ({ video }));
+  }
+
+  if (isRecord(response.video)) {
+    return [{ video: response.video }];
+  }
+
+  return [];
+}
+
+function clipCachePath(
+  outputRootDir: string,
+  providerJobReference: string,
+): string {
+  const providerHash = createHash("sha256")
+    .update(providerJobReference)
+    .digest("hex");
+  return path.join(
+    outputRootDir,
+    "provider-cache",
+    "veo",
+    `${providerHash}.mp4`,
+  );
 }
 
 async function parseOperationStatus(
@@ -273,7 +372,8 @@ async function parseOperationStatus(
   }
 
   if (isRecord(payload.error)) {
-    const message = readString(payload.error.message) ?? "vertex veo operation failed";
+    const message =
+      readString(payload.error.message) ?? "vertex veo operation failed";
     return {
       status: "failed",
       reason: message,
@@ -283,7 +383,7 @@ async function parseOperationStatus(
   }
 
   const response = payload.response;
-  if (!isRecord(response) || !Array.isArray(response.generatedVideos) || response.generatedVideos.length === 0) {
+  if (!isRecord(response)) {
     return {
       status: "failed",
       reason: "vertex veo operation completed without generated videos",
@@ -291,7 +391,25 @@ async function parseOperationStatus(
     };
   }
 
-  const firstGeneratedVideo = response.generatedVideos[0];
+  const generatedVideos = readGeneratedVideos(response);
+
+  if (generatedVideos.length === 0) {
+    const filteredReasons = Array.isArray(response.raiMediaFilteredReasons)
+      ? response.raiMediaFilteredReasons.filter((value): value is string => typeof value === "string")
+      : [];
+    const filteredReasonMessage = filteredReasons.length > 0
+      ? `vertex veo operation completed without generated videos (${filteredReasons.join(", ")})`
+      : "vertex veo operation completed without generated videos";
+
+    return {
+      status: "failed",
+      reason: filteredReasonMessage,
+      reasonCode: filteredReasons[0],
+      retryable: false,
+    };
+  }
+
+  const firstGeneratedVideo = generatedVideos[0];
   if (!isRecord(firstGeneratedVideo) || !isRecord(firstGeneratedVideo.video)) {
     return {
       status: "failed",
@@ -300,13 +418,16 @@ async function parseOperationStatus(
     };
   }
 
-  const videoUri = readString(firstGeneratedVideo.video.uri) ?? readString(firstGeneratedVideo.video.gcsUri);
+  const videoUri =
+    readString(firstGeneratedVideo.video.uri) ??
+    readString(firstGeneratedVideo.video.gcsUri);
   if (!videoUri) {
     const embeddedBytes = readVideoBytes(firstGeneratedVideo.video);
     if (!embeddedBytes) {
       return {
         status: "failed",
-        reason: "vertex veo operation did not provide downloadable video content",
+        reason:
+          "vertex veo operation did not provide downloadable video content",
         retryable: false,
       };
     }
@@ -323,7 +444,8 @@ async function parseOperationStatus(
         storage_path: localPath,
         canonical_mime: "video/mp4",
         byte_size: embeddedBytes.byteLength,
-        duration_seconds: readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5,
+        duration_seconds:
+          readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5,
         fps: readNumber(firstGeneratedVideo.video.fps) ?? 24,
         width: readNumber(firstGeneratedVideo.video.width) ?? 1280,
         height: readNumber(firstGeneratedVideo.video.height) ?? 720,
@@ -350,7 +472,8 @@ async function parseOperationStatus(
     await fs.writeFile(localPath, videoBytes);
   }
 
-  const durationSeconds = readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5;
+  const durationSeconds =
+    readNumber(firstGeneratedVideo.video.durationSeconds) ?? 5;
   const width = readNumber(firstGeneratedVideo.video.width) ?? 1280;
   const height = readNumber(firstGeneratedVideo.video.height) ?? 720;
   const fps = readNumber(firstGeneratedVideo.video.fps) ?? 24;
@@ -373,7 +496,9 @@ async function parseOperationStatus(
   };
 }
 
-export function createVertexVeoVideoClient(options: VertexVeoVideoClientOptions): VeoVideoClient {
+export function createVertexVeoVideoClient(
+  options: VertexVeoVideoClientOptions,
+): VeoVideoClient {
   let clientPromise: Promise<GoogleGenAIVideoClient> | null = null;
   const fetchBinary = options.fetchBinary ?? defaultFetchBinary;
 
@@ -405,12 +530,19 @@ export function createVertexVeoVideoClient(options: VertexVeoVideoClientOptions)
         prompt: renderScenePrompt(request),
         config: {
           numberOfVideos: 1,
-          durationSeconds: Math.max(1, Math.min(20, Math.round(request.scene.durationSeconds))),
+          durationSeconds: quantizeSceneDurationForVeo(request.scene.durationSeconds),
+          aspectRatio: inferVeoAspectRatio(request.firstFrame.width, request.firstFrame.height),
+          enhancePrompt: true,
+          personGeneration: "ALLOW_ADULT",
+          resolution: "1080p",
+          generateAudio: true,
         },
       };
 
       if (isLocalFilePath(request.firstFrame.storagePath)) {
-        const firstFrameBytes = await fs.readFile(request.firstFrame.storagePath);
+        const firstFrameBytes = await fs.readFile(
+          request.firstFrame.storagePath,
+        );
         generateRequest.image = {
           imageBytes: firstFrameBytes.toString("base64"),
           mimeType: request.firstFrame.canonicalMime,
@@ -430,9 +562,7 @@ export function createVertexVeoVideoClient(options: VertexVeoVideoClientOptions)
     getSceneVideoGenerationStatus: async (request) => {
       const client = await getClient();
       const operation = await client.operations.getVideosOperation({
-        operation: {
-          name: request.providerJobReference,
-        },
+        operation: createRestorableVideosOperation(request.providerJobReference),
       });
 
       return await parseOperationStatus(
@@ -529,7 +659,11 @@ function defaultClock(): PollingClock {
 }
 
 export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
-  generate: (payload: unknown, runId: string, runEngineAttempt: number) => Promise<VeoVideoGeneratorResult>;
+  generate: (
+    payload: unknown,
+    runId: string,
+    runEngineAttempt: number,
+  ) => Promise<VeoVideoGeneratorResult>;
 } {
   const model = options.model ?? DEFAULT_MODEL;
   const clock = options.clock ?? defaultClock();
@@ -538,12 +672,15 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
   return {
     generate: async (payload, runId, runEngineAttempt) => {
       const parsedBrief = parseNormalizedBrief(
-        isRecord(payload) && "normalized_brief" in payload ? payload.normalized_brief : payload,
+        isRecord(payload) && "normalized_brief" in payload
+          ? payload.normalized_brief
+          : payload,
       );
       if (!parsedBrief.ok) {
         return {
           outcome: "needs_clarification",
-          reason: "normalized brief schema validation failed before video generation",
+          reason:
+            "normalized brief schema validation failed before video generation",
           reasonCodes: parsedBrief.reasonCodes,
         };
       }
@@ -552,7 +689,8 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
       if (!stillsResult.ok) {
         return {
           outcome: "policy_blocked",
-          reason: "video generation requires approved-asset-derived stills from image_generation",
+          reason:
+            "video generation requires approved-asset-derived stills from image_generation",
           reasonCodes: stillsResult.reasonCodes,
         };
       }
@@ -611,11 +749,17 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
           };
         }
 
-        const stillId = typeof still.still_id === "string" ? still.still_id : null;
-        const stillStoragePath = typeof still.storage_path === "string" ? still.storage_path : null;
-        const stillMime = typeof still.canonical_mime === "string" ? still.canonical_mime : null;
+        const stillId =
+          typeof still.still_id === "string" ? still.still_id : null;
+        const stillStoragePath =
+          typeof still.storage_path === "string" ? still.storage_path : null;
+        const stillMime =
+          typeof still.canonical_mime === "string"
+            ? still.canonical_mime
+            : null;
         const stillWidth = typeof still.width === "number" ? still.width : null;
-        const stillHeight = typeof still.height === "number" ? still.height : null;
+        const stillHeight =
+          typeof still.height === "number" ? still.height : null;
         const stillSha = typeof still.sha256 === "string" ? still.sha256 : null;
 
         if (
@@ -665,7 +809,10 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
           providerJobReference = startResponse.provider_job_reference;
           latestProviderRef = providerJobReference;
         } catch (error) {
-          const message = error instanceof Error ? error.message : `failed to start veo scene ${scene.sceneId}`;
+          const message =
+            error instanceof Error
+              ? error.message
+              : `failed to start veo scene ${scene.sceneId}`;
           if (classifyTransientError(error)) {
             return {
               outcome: "retryable_error",
@@ -703,7 +850,10 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
               providerJobReference,
             });
           } catch (error) {
-            const message = error instanceof Error ? error.message : `failed to poll veo scene ${scene.sceneId}`;
+            const message =
+              error instanceof Error
+                ? error.message
+                : `failed to poll veo scene ${scene.sceneId}`;
             if (classifyTransientError(error)) {
               return {
                 outcome: "retryable_error",

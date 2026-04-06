@@ -21,6 +21,8 @@
     "run-engine:check": "tsx scripts/run-engine-check.ts"
   },
   "dependencies": {
+    "@ffmpeg-installer/ffmpeg": "^1.1.0",
+    "@ffprobe-installer/ffprobe": "^2.1.2",
     "@google/genai": "^1.29.0",
     "next": "16.2.2",
     "openai": "^6.1.0",

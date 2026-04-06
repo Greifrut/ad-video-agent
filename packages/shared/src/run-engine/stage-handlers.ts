@@ -10,6 +10,7 @@ import {
   createGeminiImageGenerator,
   type GeminiFlashImageClient,
 } from "../domain/gemini-image";
+import { createPreGeneratedImageGenerator } from "../domain/pre-generated-image";
 import {
   createVeoVideoGenerator,
   type VeoVideoClient,
@@ -80,6 +81,11 @@ export type GeminiImageStageOptions = {
   client: GeminiFlashImageClient;
   model?: string;
   approvedAssetsRootDir?: string;
+};
+
+export type PreGeneratedImageStageOptions = {
+  assetsRootDir?: string;
+  model?: string;
 };
 
 export type VeoVideoStageOptions = {
@@ -183,6 +189,43 @@ export function createGeminiImageStageHandler(options: GeminiImageStageOptions):
           reason_codes: result.reasonCodes,
         },
       },
+    };
+  };
+}
+
+export function createPreGeneratedImageStageHandler(options: PreGeneratedImageStageOptions): StageHandler {
+  const generator = createPreGeneratedImageGenerator({
+    assetsRootDir: options.assetsRootDir,
+    model: options.model,
+  });
+
+  return async (context) => {
+    const result = await generator.generate(context.payload, context.runId);
+
+    if (result.outcome === "ok") {
+      return {
+        type: "success",
+        data: result.stageData,
+        providerRef: result.providerRef ?? undefined,
+      };
+    }
+
+    if (result.outcome === "needs_clarification") {
+      return {
+        type: "terminal_outcome",
+        outcome: "needs_clarification",
+        reason: `${result.reason} (${result.reasonCodes.join(",")})`,
+        data: {
+          image_generation: {
+            reason_codes: result.reasonCodes,
+          },
+        },
+      };
+    }
+
+    return {
+      type: "fatal_error",
+      reason: `${result.reason} (${result.reasonCodes.join(",")})`,
     };
   };
 }

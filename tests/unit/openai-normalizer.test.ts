@@ -157,6 +157,58 @@ describe("openai-normalizer", () => {
     expect(fake.requests).toHaveLength(2);
   });
 
+  test("quantizes normalized brief duration to Veo-supported lengths under 10 seconds total", async () => {
+    const fake = createFakeClient([
+      {
+        id: "resp_duration",
+        output_text: JSON.stringify({
+          schemaVersion: BRIEF_SCHEMA_VERSION,
+          briefId: "brief-duration-cap",
+          campaignName: "Duration Cap",
+          objective: "Keep runtime cheap.",
+          language: "en",
+          aspectRatio: "4:9",
+          unresolvedQuestions: [],
+          scenes: [
+            {
+              sceneId: "scene-1",
+              sceneType: "intro",
+              visualCriticality: "supporting",
+              narrative: "Hook",
+              desiredTags: ["hero"],
+              approvedAssetIds: [],
+              generationMode: "text_only",
+              requestedTransform: "overlay",
+              durationSeconds: 7,
+            },
+            {
+              sceneId: "scene-2",
+              sceneType: "product_focus",
+              visualCriticality: "brand_critical",
+              narrative: "Product",
+              desiredTags: ["product"],
+              approvedAssetIds: [],
+              generationMode: "text_only",
+              requestedTransform: "animate",
+              durationSeconds: 7,
+            },
+          ],
+        }),
+      },
+    ]);
+    const normalizer = createOpenAINormalizer({ client: fake.client });
+
+    const result = await normalizer.normalize({ brief: "Make it 20 seconds if needed." });
+
+    expect(result.outcome).toBe("ok");
+    if (result.outcome !== "ok") {
+      return;
+    }
+
+    expect(result.normalizedBrief.scenes.map((scene) => scene.durationSeconds)).toEqual([6, 4]);
+    expect(result.normalizedBrief.scenes.reduce((sum, scene) => sum + scene.durationSeconds, 0)).toBe(10);
+  });
+
   test("surfaces provider_failed when OpenAI request errors", async () => {
     const fake = createFakeClient([{ error: new Error("upstream timeout") }]);
     const normalizer = createOpenAINormalizer({ client: fake.client });

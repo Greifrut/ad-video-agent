@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { loadLocalEnv } from "./load-local-env";
 
 function runCommand(command: string) {
   return spawn(command, {
@@ -9,6 +10,8 @@ function runCommand(command: string) {
 }
 
 async function main(): Promise<void> {
+  loadLocalEnv();
+
   const webProcess = runCommand("pnpm dev");
   const workerProcess = runCommand("pnpm worker:dev");
 
