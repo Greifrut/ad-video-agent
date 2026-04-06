@@ -241,6 +241,12 @@ describe("veo-adapter", () => {
     expect(projection.phase).toBe("completed");
     expect(fakeVeo.startRequests).toHaveLength(2);
     expect(fakeVeo.startRequests[0]?.firstFrame.storagePath).toContain("01-hook-spokeswoman-dealpump.png");
+    expect(fakeVeo.startRequests[0]?.scene.sequencePosition).toBe("opening");
+    expect(fakeVeo.startRequests[0]?.scene.previousNarrative).toBeNull();
+    expect(fakeVeo.startRequests[0]?.scene.nextNarrative).toBe("Product demo close-up");
+    expect(fakeVeo.startRequests[1]?.scene.sequencePosition).toBe("closing");
+    expect(fakeVeo.startRequests[1]?.scene.previousNarrative).toBe("Spokeswoman hook");
+    expect(fakeVeo.startRequests[1]?.scene.nextNarrative).toBeNull();
 
     const videoEvent = projection.events.find(
       (event) =>

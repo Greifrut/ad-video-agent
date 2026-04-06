@@ -268,7 +268,33 @@ Use `pnpm run-engine:check` before deployment and as part of runtime debugging.
 
 ## Future improvements
 
+### Long-form video production
+
+- Replace the current `<=10s` single-pass normalization path with a two-pass planner that first builds a chapter outline and then splits the script into provider-safe `4s/6s/8s` scene batches.
+- Introduce segment manifests so longer videos can be rendered, retried, and approved per batch, then stitched into one final edit with consistent ordering, transitions, subtitles, and chapter-level provenance.
+- Preserve continuity across batches with shared creative memory for hook wording, product state, visual identity, subtitle voice, music bed, and CTA progression.
+- Add partial re-render support so a weak or failed chapter can be regenerated without re-exporting the entire long-form video.
+
+### System prompts and output quality
+
+- Move from single static stage prompts to layered system prompts composed from brand rules, channel constraints, audience, campaign goals, legal copy requirements, and stage-specific instructions.
+- Add prompt regression tests and golden-brief evaluations that score schema validity, asset-policy compliance, CTA quality, factual consistency, and creative diversity before a prompt version is promoted.
+- Support specialized prompt packs and examples for different marketing jobs such as UGC ads, product demos, testimonials, seasonal promos, and retargeting creatives.
+- Add automatic guardrails for unsupported claims, weak hooks, repetitive scene plans, missing offer details, and mismatches between narration, subtitles, and CTA copy.
+
+### Marketing-team workflow
+
+- Add authentication, shared workspaces, campaign folders, role-based approvals, comments, and review states so marketers, designers, and legal reviewers can collaborate in one system.
+- Generate structured creative variants from one brief across multiple hooks, CTAs, durations, aspect ratios, and localized copy to support A/B testing and channel-specific exports.
+- Expand beyond `language: "en"` with localization for scripts, subtitles, voiceover timing, and market-specific compliance text.
+- Add reusable brand kits and campaign presets for approved assets, tone, mandatory claims, subtitle styling, music defaults, and export settings.
+- Add batch generation from campaign plans or product feeds so the team can produce many related creatives without manually resubmitting each brief.
+- Integrate with DAM and distribution tools so approved assets and final exports can move directly into Google Drive, Meta Ads, TikTok, YouTube, or internal review systems.
+- Record downstream performance feedback so campaign results can be tied back to prompt versions, asset choices, hooks, and scene structures for iterative improvement.
+
+### Operational maturity
+
+- Add automated QA gates before completion for subtitle timing, safe-area overlap, logo visibility, audio loudness, black frames, and destination-platform spec checks.
 - Move rate limiting from in-memory state to a process-safe shared mechanism if the service ever grows beyond one container.
 - Add artifact retention policies and cleanup jobs for long-lived environments.
-- Add auth and reviewer session controls if the demo becomes semi-public or persistent.
 - Add deployment health checks that verify both the web process and worker loop are healthy after boot.

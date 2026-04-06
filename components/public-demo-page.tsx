@@ -6,23 +6,12 @@ import {
 } from "@shared/domain/approved-assets";
 import type { RunOutcome, RunPhase } from "@shared/domain/contracts";
 import { useEffect, useMemo, useState } from "react";
-
-const FIXTURE_SAMPLE_BRIEF = [
-  "Create a 10-second Deal Pump social ad that opens on the approved wordmark over the studio backdrop,",
-  "cuts to the approved can packshot with energetic motion, and closes with a strong CTA.",
-  "Keep it punchy, premium, and obviously derived from approved brand assets.",
-].join(" ");
-
-const LIVE_SAMPLE_BRIEF = [
-  "Create a short 4:9 vertical product video for Deal Pump in a clean modern studio.",
-  "Scene 1: introduces the product with natural hand gestures and calm studio movement.",
-  "Scene 2: show the product interface in use on a device with smooth motion. Scene 3: show a simple positive lifestyle moment.",
-  "Scene 4: end on a clean product-focused closing frame with space for later CTA text, keeping the total video under 10 seconds.",
-].join(" ");
-
-function sampleBriefForMode(fixtureMode: boolean): string {
-  return fixtureMode ? FIXTURE_SAMPLE_BRIEF : LIVE_SAMPLE_BRIEF;
-}
+import {
+  FIXTURE_SAMPLE_BRIEF,
+  LIVE_SAMPLE_BRIEF,
+  defaultFixtureModeForEnvironment,
+  sampleBriefForMode,
+} from "@/components/public-demo-config";
 
 const PHASE_STEPS: Array<{
   phase: RunPhase;
@@ -268,6 +257,12 @@ function describeStatus(status: RunStatusPayload | null): string {
   return descriptions[status.phase];
 }
 
+function describeReadyState(fixtureMode: boolean): string {
+  return fixtureMode
+    ? "Paste a brief or use the sample preset to start a deterministic reviewer demo."
+    : "Paste a brief or use the sample preset to start a live provider run.";
+}
+
 function formatJson(value: unknown, fallback: string): string {
   if (value === undefined) {
     return fallback;
@@ -352,8 +347,11 @@ function toneClasses(tone: ReturnType<typeof statusTone>): string {
 }
 
 export function PublicDemoPage() {
-  const [fixtureMode, setFixtureMode] = useState(true);
-  const [brief, setBrief] = useState(() => sampleBriefForMode(true));
+  const initialFixtureMode = defaultFixtureModeForEnvironment(process.env.NODE_ENV);
+  const [fixtureMode, setFixtureMode] = useState(initialFixtureMode);
+  const [brief, setBrief] = useState(() =>
+    sampleBriefForMode(initialFixtureMode),
+  );
   const [isStarting, setIsStarting] = useState(false);
   const [pollingRunId, setPollingRunId] = useState<string | null>(null);
   const [runStatus, setRunStatus] = useState<RunStatusPayload | null>(null);
@@ -508,7 +506,8 @@ export function PublicDemoPage() {
     : -1;
 
   const messageTone = statusTone(runStatus);
-  const statusMessage = requestError ?? describeStatus(runStatus);
+  const statusMessage =
+    requestError ?? (runStatus ? describeStatus(runStatus) : describeReadyState(fixtureMode));
   const statusErrorMessage =
     requestError ??
     (runStatus?.outcome === "policy_blocked" ||
@@ -626,7 +625,9 @@ export function PublicDemoPage() {
                 <p className="font-bold tracking-wide">
                   {runStatus
                     ? `${runStatus.phase.replaceAll("_", " ")} · ${runStatus.outcome.replaceAll("_", " ")}`
-                    : "Ready for a deterministic run"}
+                    : fixtureMode
+                      ? "Ready for a deterministic run"
+                      : "Ready for a live run"}
                 </p>
                 <p className="opacity-90">{statusMessage}</p>
               </div>

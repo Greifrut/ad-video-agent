@@ -132,6 +132,9 @@ export type VeoSceneVideoStartRequest = {
     sceneType: string;
     narrative: string;
     durationSeconds: number;
+    sequencePosition?: "opening" | "middle" | "closing" | "standalone";
+    previousNarrative?: string | null;
+    nextNarrative?: string | null;
   };
   prompt: {
     prompt_id: string;
@@ -212,18 +215,52 @@ function isLocalFilePath(candidate: string): boolean {
   return !candidate.includes("://");
 }
 
+function readSceneContinuityLine(
+  label: string,
+  narrative: string | null | undefined,
+): string | null {
+  if (typeof narrative !== "string" || narrative.trim().length === 0) {
+    return null;
+  }
+
+  return `${label}: ${sanitizeNarrativeForVeo(narrative)}`;
+}
+
 function renderScenePrompt(request: VeoSceneVideoStartRequest): string {
-  return [
+  const lines = [
     request.prompt.template,
     "",
     `Scene ID: ${request.scene.sceneId}`,
     `Scene type: ${request.scene.sceneType}`,
+    `Scene position: ${request.scene.sequencePosition ?? "standalone"}`,
     `Narrative: ${sanitizeNarrativeForVeo(request.scene.narrative)}`,
     `Duration seconds: ${request.scene.durationSeconds}`,
     `First frame still ID: ${request.firstFrame.stillId}`,
     `First frame SHA256: ${request.firstFrame.sha256}`,
     `Source asset IDs: ${request.sourceAssetIds.join(",")}`,
-  ].join("\n");
+  ];
+
+  const previousSceneLine = readSceneContinuityLine(
+    "Previous scene summary",
+    request.scene.previousNarrative,
+  );
+  if (previousSceneLine) {
+    lines.push(previousSceneLine);
+  }
+
+  const nextSceneLine = readSceneContinuityLine(
+    "Next scene summary",
+    request.scene.nextNarrative,
+  );
+  if (nextSceneLine) {
+    lines.push(nextSceneLine);
+  }
+
+  lines.push(
+    "Transition guidance: begin and end on natural edit points, complete any implied spoken phrase within this clip, keep motion continuous and premium, and avoid abrupt cut-ins, cut-off words, or mid-action endings.",
+  );
+
+  return lines.join("\n");
 }
 
 function sanitizeNarrativeForVeo(narrative: string): string {
@@ -658,6 +695,25 @@ function defaultClock(): PollingClock {
   };
 }
 
+function describeSceneSequencePosition(
+  index: number,
+  totalScenes: number,
+): "opening" | "middle" | "closing" | "standalone" {
+  if (totalScenes <= 1) {
+    return "standalone";
+  }
+
+  if (index === 0) {
+    return "opening";
+  }
+
+  if (index === totalScenes - 1) {
+    return "closing";
+  }
+
+  return "middle";
+}
+
 export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
   generate: (
     payload: unknown,
@@ -731,7 +787,7 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
       }> = [];
       let latestProviderRef: string | null = null;
 
-      for (const scene of parsedBrief.value.scenes) {
+      for (const [sceneIndex, scene] of parsedBrief.value.scenes.entries()) {
         if (scene.generationMode !== "asset_derived") {
           return {
             outcome: "policy_blocked",
@@ -788,6 +844,18 @@ export function createVeoVideoGenerator(options: VeoVideoGeneratorOptions): {
               sceneType: scene.sceneType,
               narrative: scene.narrative,
               durationSeconds: scene.durationSeconds,
+              sequencePosition: describeSceneSequencePosition(
+                sceneIndex,
+                parsedBrief.value.scenes.length,
+              ),
+              previousNarrative:
+                sceneIndex > 0
+                  ? parsedBrief.value.scenes[sceneIndex - 1]?.narrative ?? null
+                  : null,
+              nextNarrative:
+                sceneIndex < parsedBrief.value.scenes.length - 1
+                  ? parsedBrief.value.scenes[sceneIndex + 1]?.narrative ?? null
+                  : null,
             },
             prompt: {
               prompt_id: prompt.prompt_id,

@@ -34,6 +34,8 @@ describe("vertex veo video client polling", () => {
         narrative:
           "A woman speaking straight to camera about why this is the best ecommerce product.",
         durationSeconds: 3,
+        sequencePosition: "opening",
+        nextNarrative: "Show the product interface with smooth motion and a complete product benefit line.",
       },
       firstFrame: {
         stillId: "still-1",
@@ -64,7 +66,16 @@ describe("vertex veo video client polling", () => {
       },
     });
     expect((generateRequest as { prompt?: string }).prompt).toContain(
-      "Narrative: presenting in a clean studio about introducing strong ecommerce product.",
+      "Narrative: A presenter presenting in a clean studio about introducing strong ecommerce product.",
+    );
+    expect((generateRequest as { prompt?: string }).prompt).toContain(
+      "Scene position: opening",
+    );
+    expect((generateRequest as { prompt?: string }).prompt).toContain(
+      "Next scene summary: Show the product interface with smooth motion and a complete product benefit line.",
+    );
+    expect((generateRequest as { prompt?: string }).prompt).toContain(
+      "Transition guidance: begin and end on natural edit points",
     );
   });
 
