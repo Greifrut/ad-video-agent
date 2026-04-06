@@ -56,7 +56,7 @@ describe("manifest-integrity", () => {
     const mismatch = compareObservedMetadata(
       {
         ...target,
-        canonicalMime: "image/png",
+        canonicalMime: "image/jpeg",
         byteSize: target.byteSize + 1,
         dimensions: { width: target.dimensions.width + 1, height: target.dimensions.height },
       },

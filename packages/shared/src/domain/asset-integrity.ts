@@ -36,6 +36,18 @@ function canonicalMimeFromFilename(filename: string): string {
   return "application/octet-stream";
 }
 
+function dimensionsFromPng(buffer: Buffer): AssetDimensions {
+  const pngSignature = "89504e470d0a1a0a";
+  if (buffer.byteLength < 24 || buffer.subarray(0, 8).toString("hex") !== pngSignature) {
+    throw new Error("PNG file is missing a valid signature");
+  }
+
+  return {
+    width: buffer.readUInt32BE(16),
+    height: buffer.readUInt32BE(20),
+  };
+}
+
 function dimensionsFromSvg(svgBody: string): AssetDimensions {
   const widthMatch = svgBody.match(/width="(\d+)"/);
   const heightMatch = svgBody.match(/height="(\d+)"/);
@@ -54,7 +66,9 @@ export async function buildObservedMetadata(filePath: string, filenameForMime: s
   const utf8 = body.toString("utf8");
   const dimensions = filenameForMime.endsWith(".svg")
     ? dimensionsFromSvg(utf8)
-    : { width: 0, height: 0 };
+    : filenameForMime.endsWith(".png")
+      ? dimensionsFromPng(body)
+      : { width: 0, height: 0 };
 
   return {
     sha256: crypto.createHash("sha256").update(body).digest("hex"),

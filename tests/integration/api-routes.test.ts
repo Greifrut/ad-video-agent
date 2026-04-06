@@ -32,7 +32,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 function createMockMediaRunner(): MediaCommandRunner {
-  const metadataByPath = new Map<string, { width: number; height: number; codec: string; fps: number; duration: number }>();
+  const metadataByPath = new Map<
+    string,
+    { width: number; height: number; codec: string; fps: number; duration: number; hasAudio: boolean }
+  >();
 
   return async (command, args) => {
     const outputPath = args[args.length - 1] ?? "";
@@ -51,6 +54,7 @@ function createMockMediaRunner(): MediaCommandRunner {
           codec: "h264",
           fps: 24,
           duration: Number.isFinite(duration) ? duration : 2,
+          hasAudio: true,
         });
       }
 
@@ -68,21 +72,32 @@ function createMockMediaRunner(): MediaCommandRunner {
       codec: "h264",
       fps: 24,
       duration: 5,
+      hasAudio: true,
     };
+
+    const streams: Array<Record<string, string | number>> = [
+      {
+        codec_type: "video",
+        codec_name: metadata.codec,
+        width: metadata.width,
+        height: metadata.height,
+        avg_frame_rate: `${metadata.fps}/1`,
+        duration: String(metadata.duration),
+      },
+    ];
+
+    if (metadata.hasAudio) {
+      streams.push({
+        codec_type: "audio",
+        codec_name: "aac",
+        duration: String(metadata.duration),
+      });
+    }
 
     return {
       exitCode: 0,
       stdout: JSON.stringify({
-        streams: [
-          {
-            codec_type: "video",
-            codec_name: metadata.codec,
-            width: metadata.width,
-            height: metadata.height,
-            avg_frame_rate: `${metadata.fps}/1`,
-            duration: String(metadata.duration),
-          },
-        ],
+        streams,
         format: { duration: String(metadata.duration) },
       }),
       stderr: "",
@@ -108,10 +123,10 @@ function createFixtureOpenAIClient(): OpenAIResponsesClient {
               sceneId: "scene-intro",
               sceneType: "intro",
               visualCriticality: "supporting",
-              narrative: "Intro with logo and background",
+              narrative: "A spokesperson opens on the Deal Pump wordmark over the studio gradient.",
               desiredTags: ["logo", "background"],
               approvedAssetIds: [],
-              generationMode: "asset_derived",
+              generationMode: "text_only",
               requestedTransform: "overlay",
               durationSeconds: 5,
             },
@@ -119,10 +134,10 @@ function createFixtureOpenAIClient(): OpenAIResponsesClient {
               sceneId: "scene-product",
               sceneType: "product_focus",
               visualCriticality: "brand_critical",
-              narrative: "Product hero moment",
+              narrative: "The approved can packshot lands with energetic motion.",
               desiredTags: ["product", "packshot"],
               approvedAssetIds: [],
-              generationMode: "asset_derived",
+              generationMode: "text_only",
               requestedTransform: "animate",
               durationSeconds: 6,
             },

@@ -111,30 +111,26 @@ const validatePolicyStageForTest: StageHandler = async (context) => {
     };
   }
 
-  const enrichedScenes = normalizedBrief.scenes.map((scene) => {
-    if (scene.sceneType === "intro") {
+    const enrichedScenes = normalizedBrief.scenes.map((scene) => {
+      if (scene.sceneType === "intro") {
+        return {
+          ...scene,
+          approvedAssetIds: ["hook-spokeswoman-dealpump"],
+        };
+      }
+
       return {
         ...scene,
-        approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
+        approvedAssetIds: ["product-demo-closeup"],
       };
-    }
-
-    return {
-      ...scene,
-      approvedAssetIds: ["product-can-classic-packshot"],
-    };
-  });
+    });
 
   return {
     type: "success",
     data: {
-      validate_policy: {
-        selected_asset_ids: [
-          "brand-wordmark-primary",
-          "studio-gradient-backdrop",
-          "product-can-classic-packshot",
-        ],
-      },
+          validate_policy: {
+            selected_asset_ids: ["hook-spokeswoman-dealpump", "product-demo-closeup"],
+          },
       normalized_brief: {
         ...normalizedBrief,
         scenes: enrichedScenes,
@@ -158,23 +154,23 @@ function createPayloadWithApprovedAssets() {
           sceneId: "scene-intro",
           sceneType: "intro",
           visualCriticality: "supporting",
-          narrative: "Logo reveal on gradient backdrop",
-          desiredTags: ["logo", "background"],
-          approvedAssetIds: ["brand-wordmark-primary", "studio-gradient-backdrop"],
-          generationMode: "asset_derived",
-          requestedTransform: "overlay",
-          durationSeconds: 5,
+            narrative: "Logo reveal on gradient backdrop",
+            desiredTags: ["logo", "background"],
+            approvedAssetIds: ["hook-spokeswoman-dealpump"],
+            generationMode: "asset_derived",
+            requestedTransform: "overlay",
+            durationSeconds: 5,
         },
         {
           sceneId: "scene-product",
           sceneType: "product_focus",
           visualCriticality: "brand_critical",
-          narrative: "Packshot hero with controlled crop",
-          desiredTags: ["product", "packshot"],
-          approvedAssetIds: ["product-can-classic-packshot"],
-          generationMode: "asset_derived",
-          requestedTransform: "crop",
-          durationSeconds: 6,
+            narrative: "Packshot hero with controlled crop",
+            desiredTags: ["product", "packshot"],
+            approvedAssetIds: ["product-demo-closeup"],
+            generationMode: "asset_derived",
+            requestedTransform: "crop",
+            durationSeconds: 6,
         },
       ],
     },
@@ -252,9 +248,8 @@ describe("gemini-image", () => {
           model: "gemini-2.5-flash-image",
         },
         source_asset_ids: [
-          "brand-wordmark-primary",
-          "studio-gradient-backdrop",
-          "product-can-classic-packshot",
+          "hook-spokeswoman-dealpump",
+          "product-demo-closeup",
         ],
       },
     });

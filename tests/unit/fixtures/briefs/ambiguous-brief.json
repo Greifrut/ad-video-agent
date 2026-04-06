@@ -13,9 +13,9 @@
       "sceneId": "scene-ambiguous-intro",
       "sceneType": "intro",
       "visualCriticality": "supporting",
-      "narrative": "Open with atmosphere while final hero is undecided",
-      "desiredTags": ["background"],
-      "approvedAssetIds": ["studio-gradient-backdrop"],
+      "narrative": "Open with an approved intro frame while the final hero is undecided",
+      "desiredTags": ["hero", "social", "background"],
+      "approvedAssetIds": ["hook-spokeswoman-dealpump"],
       "generationMode": "asset_derived",
       "requestedTransform": "color_grade",
       "durationSeconds": 5
